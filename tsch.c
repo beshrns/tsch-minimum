@@ -837,13 +837,12 @@ powercycle(struct rtimer *t, void *ptr)
 		dt = next_timeslot ? next_timeslot - timeslot :
 						current_slotframe->length - timeslot;
 		duration = dt * TsSlotDuration;
-		start += duration;
+
 		//XXX correct on timeslot boundaries
 		static uint16_t correction = 5;
 		if (!next_timeslot) {
-			if (RTIMER_NOW() < start - correction + 1) {
+			if (RTIMER_NOW() < start + duration -correction + 1) {
 				COOJA_DEBUG_STR("New slot frame: no overflow");
-				start -= correction;
 				correction = 5;
 				duration -= correction;
 			} else {
@@ -855,6 +854,7 @@ powercycle(struct rtimer *t, void *ptr)
 		timeslot = next_timeslot;
 		ieee154e_vars.asn += dt;
 		schedule_fixed(t, start, duration);
+		start += duration;
 		leds_off(LEDS_GREEN);
 		PT_YIELD(&mpt);
 	}
