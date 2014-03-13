@@ -48,6 +48,7 @@
 #include "cooja-debug.h"
 #include "lib/list.h"
 #include "lib/memb.h"
+#include "lib/random.h"
 
 static volatile ieee154e_vars_t ieee154e_vars;
 
@@ -132,6 +133,7 @@ volatile uint8_t working_on_queue;
 #define MAX_NEIGHBOR 16
 #define macMinBE 3
 #define macMaxFrameRetries 4
+#define macMaxBE 5
 
 // TSCH PACKET STRUCTURE
 struct TSCH_packet
@@ -148,6 +150,7 @@ struct neighbor_queue
 	struct neighbor_queue *next; // pointer to next neighbor
 	rimeaddr_t addr; // neighbor address
 	uint8_t BE_value; // current value of backoff exponent for this neighbor
+	uint8_t BW_value; // current value of backoff counter fot this neighbor
 	struct TSCH_packet buffer[MAX_NUM_PKT]; // circular buffer of packets for this neighbor
 	uint8_t put_ptr, get_ptr, mask; // data-structures for circular buffer
 };
@@ -202,6 +205,7 @@ add_queue(const rimeaddr_t *addr)
 		/* Init neighbor entry */
 		rimeaddr_copy(&n->addr, addr);
 		n->BE_value = macMinBE;
+    n->BW_value = 0;
 		n->put_ptr = 0;
 		n->get_ptr = 0;
 		n->mask = MAX_NUM_PKT - 1;
@@ -211,7 +215,9 @@ add_queue(const rimeaddr_t *addr)
 		}
 		list_add(neighbor_list, n);
 		working_on_queue = 0;
-		//PRINTF("ADD QUEUE %d\n", addr);
+	  COOJA_DEBUG_STR("ADD QUEUE\n");
+    COOJA_DEBUG_PRINTF("%u %u %u %u %u %u %u %u\n", addr->u8[7], addr->u8[6], addr->u8[5], addr->u8[4], addr->u8[3], addr->u8[2], addr->u8[1], addr->u8[0]);
+    
 		return 1;
 	}
 	working_on_queue = 0;
@@ -515,7 +521,7 @@ hop_channel(uint8_t offset)
 	return 0;
 }
 /*---------------------------------------------------------------------------*/
-#define BROADCAST_CELL_ADDRESS { { 0, 0 } }
+#define BROADCAST_CELL_ADDRESS { { 0, 0, 0, 0, 0, 0, 0, 0 } }
 
 const cell_t generic_shared_cell = {
 BROADCAST_CELL_ADDRESS, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED,
@@ -525,11 +531,19 @@ BROADCAST_CELL_ADDRESS, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED,
 const cell_t generic_eb_cell = { 0, 0, LINK_OPTION_TX, LINK_TYPE_ADVERTISING,
 BROADCAST_CELL_ADDRESS };
 
-const cell_t * minimum_cells[6] = { &generic_eb_cell, &generic_shared_cell,
-		&generic_shared_cell, &generic_shared_cell, &generic_shared_cell,
-		&generic_shared_cell, };
+// 1 { { 2, 18, 116, 1, 0, 1, 1, 1} }
+// 2 { { 2, 18, 116, 2, 0, 2, 2, 2} }
 
-const slotframe_t minimum_slotframe = { 0, 101, 6, minimum_cells };
+const cell_t cell_to_1 ={ { { 0, 18, 116, 1, 0, 1, 1, 1} }, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED, LINK_TYPE_NORMAL,  { { 0, 18, 116, 1, 0, 1, 1, 1} }};
+const cell_t cell_to_2 ={ { { 0, 18, 116, 2, 0, 2, 2, 2} }, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED, LINK_TYPE_NORMAL,  { { 0, 18, 116, 2, 0, 2, 2, 2} }};
+
+
+
+const cell_t * minimum_cells[8] = { &generic_eb_cell, &generic_shared_cell,
+		&generic_shared_cell, &generic_shared_cell, &generic_shared_cell,
+		&generic_shared_cell, &cell_to_1, &cell_to_2, };
+
+const slotframe_t minimum_slotframe = { 0, 101, 8, minimum_cells };
 
 //to initialize radio sfd counter and synchronize it with rtimer
 void
@@ -603,6 +617,8 @@ powercycle(struct rtimer *t, void *ptr)
 	PT_BEGIN(&mpt);
 	static uint16_t timeslot = 0;
 	static cell_t * cell = NULL;
+  static struct TSCH_packet* p = NULL;
+  static struct neighbor_queue *n = NULL;
 	start = RTIMER_NOW();
 	//while MAC-RDC is not disabled, and while its synchronized
 	while (ieee154e_vars.is_sync && ieee154e_vars.state != TSCH_OFF) {
@@ -617,20 +633,19 @@ powercycle(struct rtimer *t, void *ptr)
 			//return MAC_TX_DEFERRED;
 		} else {
 			hop_channel(cell->channel_offset);
-			static struct TSCH_packet* p = NULL;
-			if (cell->link_options & LINK_OPTION_TX ) {
+	    p = NULL;
+      n = NULL;
+			if (cell->link_options & LINK_OPTION_TX) {
 
 				//is there a packet to send? if not check if it is RX too
-
-				struct neighbor_queue *n = list_head(neighbor_list);
-
 				if (cell->link_type == LINK_TYPE_ADVERTISING) {
 				//TODO fetch adv packets
-				} else { //NORMAL unicast link
+				} else { //NORMAL link
 				//TODO use neighbor table / map
+          n=list_head(neighbor_list);
 					while (n != NULL) {
 						if (rimeaddr_cmp(&n->addr, &cell->node_address)) {
-							p = read_packet_from_queue(&n->addr);
+              p = read_packet_from_queue(&n->addr);
 							break;
 						}
 						n = list_item_next(n);
@@ -638,10 +653,12 @@ powercycle(struct rtimer *t, void *ptr)
 				}
 			}
 				//Is there a packet to send?
-				if (cell->link_options & LINK_OPTION_TX && p != NULL) {
-
+				if ((cell->link_options & LINK_OPTION_TX) && p != NULL) {
+        COOJA_DEBUG_STR("TO TRANSMIT\n");
 				//timeslot_tx(t, start, msg, MSG_LEN);
 				{
+					// if dedicated slot or shared slot and BW_value=0, we transmit the packet
+					if(!(cell->link_options & LINK_OPTION_SHARED) || ((cell->link_options & LINK_OPTION_SHARED) && n->BW_value == 0)){
 					const void * payload = queuebuf_dataptr(p->pkt);
 					const unsigned short payload_len = queuebuf_datalen(p->pkt);
 					//TODO There are small timing variations visible in cooja, which needs tuning
@@ -649,6 +666,8 @@ powercycle(struct rtimer *t, void *ptr)
 					uint16_t ack_sfd_time = 0;
 					rtimer_clock_t ack_sfd_rtime = 0;
 					is_broadcast = rimeaddr_cmp(&cell->node_address, &rimeaddr_null);
+          //COOJA_DEBUG_STR("HERE\n");
+          if(!is_broadcast){COOJA_DEBUG_PRINTF("NO TX BROADCAST %d %d %d %d %d %d %d %d\n", cell->node_address.u8[7], cell->node_address.u8[6], cell->node_address.u8[5], cell->node_address.u8[4], cell->node_address.u8[3], cell->node_address.u8[2], cell->node_address.u8[1], cell->node_address.u8[0]);}
 					we_are_sending = 1;
 					char* payload_ptr = payload;
 //					//0 is not allowed according to the old standard I think
@@ -658,9 +677,9 @@ powercycle(struct rtimer *t, void *ptr)
 					seqno = payload_ptr[2];
 
 					//prepare packet to send
-					COOJA_DEBUG_STR("prepare tx\n");
+					//COOJA_DEBUG_STR("prepare tx\n");
 					uint8_t success = !NETSTACK_RADIO.prepare(payload, payload_len);
-					COOJA_DEBUG_STR("prepare tx done\n");
+					//COOJA_DEBUG_STR("prepare tx done\n");
 					//delay before CCA
 					schedule_fixed(t, start, TsCCAOffset);
 					PT_YIELD(&mpt);
@@ -685,7 +704,7 @@ powercycle(struct rtimer *t, void *ptr)
 
 						if (success == RADIO_TX_OK) {
 							if(is_broadcast) {
-								remove_packet_from_queue(&cell->node_address);
+								//remove_packet_from_queue(&cell->node_address);
 							} else {
 								//delay wait for ack: after tx
 								schedule_fixed(t,
@@ -731,30 +750,77 @@ powercycle(struct rtimer *t, void *ptr)
 						p->transmissions++;
 						if (p->transmissions == macMaxFrameRetries) {
 							remove_packet_from_queue(&cell->node_address);
+					    n->BE_value=macMinBE;
+							n->BW_value=0;
+						}
+						if((cell->link_options & LINK_OPTION_SHARED) & !is_broadcast){
+                    unsigned int window = 1 << n->BE_value;
+						        n->BW_value = random_rand()%window;
+						        n->BE_value++;
+							if(n->BE_value > macMaxBE){ n->BE_value = macMaxBE;}
 						}
 						ret = MAC_TX_NOACK;
 					} else if (success == RADIO_TX_OK) {
 						//TODO synchronize using ack_sfd_rtime or ack_sfd_time
 						remove_packet_from_queue(&cell->node_address);
+						if(!read_packet_from_queue(&cell->node_address)){
+						   // if no more packets in the queue
+						   n->BW_value = 0;
+						   n->BE_value = macMinBE;
+						}
+						else{
+						  // if queue is not empty
+						   n->BW_value = 0;
+						}
 						ret = MAC_TX_OK;
 					} else if (success == RADIO_TX_COLLISION) {
 						p->transmissions++;
 						if (p->transmissions == macMaxFrameRetries) {
 							remove_packet_from_queue(&cell->node_address);
+							n->BE_value=macMinBE;
+							n->BW_value=0;
+						}
+						if((cell->link_options & LINK_OPTION_SHARED) & !is_broadcast){
+						        unsigned int window = 1 << n->BE_value;
+						        n->BW_value = random_rand()%window;
+						        n->BE_value++;
+							if(n->BE_value > macMaxBE){ n->BE_value = macMaxBE;}
 						}
 						ret = MAC_TX_COLLISION;
 					} else if (success == RADIO_TX_ERR) {
 						p->transmissions++;
 						if (p->transmissions == macMaxFrameRetries) {
 							remove_packet_from_queue(&cell->node_address);
+							n->BE_value=macMinBE;
+							n->BW_value=0;
+						}
+						if((cell->link_options & LINK_OPTION_SHARED) & !is_broadcast){
+						         unsigned int window = 1 << n->BE_value;
+						         n->BW_value = random_rand()%window;
+                     n->BE_value++;
+							if(n->BE_value > macMaxBE){ n->BE_value = macMaxBE;}
 						}
 						ret = MAC_TX_ERR;
 					} else {
+						// successful transmission
 						remove_packet_from_queue(&cell->node_address);
+						if(!read_packet_from_queue(&cell->node_address)){
+						   // if no more packets in the queue
+						   n->BW_value = 0;
+						   n->BE_value = macMinBE;
+						}
+						else{
+						  // if queue is not empty
+						   n->BW_value = 0;
+						}
 						ret = MAC_TX_OK;
 					}
 					//XXX callback -- do we need to resotre packet to packetbuf?
 					mac_call_sent_callback(p->sent, p->ptr, ret, p->transmissions);
+					}
+					else { // packet to transmit but we cannot use shared slot due to backoff counter
+					       n->BW_value--;
+					}
 				}
 
 				} else if (cell->link_options & LINK_OPTION_RX) {
