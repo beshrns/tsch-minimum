@@ -35,7 +35,7 @@ volatile char cooja_debug_point;
 #define COOJA_DEBUG_INT(val) do { char tmp[10] = {0}; uint32_t v = (uint32_t)(val); int i=9; if(v==0) tmp[--i] = '0'; while(v) { tmp[--i] = '0' + v%10; v /= 10; } cooja_debug_ptr = tmp+i;  } while(0)
 #define COOJA_DEBUG_INTH(val) do { char tmp[5] = {0}; uint16_t v = (uint16_t)(val); tmp[0] = HEXC(v>>12); tmp[1] = HEXC(v>>8); tmp[2] = HEXC(v>>4); tmp[3] = HEXC(v); cooja_debug_ptr = tmp;  } while(0)
 #define COOJA_DEBUG_PRINTF(...) do { char tmp[200]; sprintf(tmp, __VA_ARGS__); cooja_debug_ptr = tmp; } while(0);
-#define COOJA_DEBUG_ADDR(addr) { int i; COOJA_DEBUG_STR("addr"); for(i=0;i<16;i++) COOJA_DEBUG_INT(((u8_t *)addr)[i]); COOJA_DEBUG_STR("end addr");}
+#define COOJA_DEBUG_ADDR(addr) { int i; COOJA_DEBUG_STR("addr"); for(i=0;i<8;i++) COOJA_DEBUG_INT(((u8_t *)addr)[i]); COOJA_DEBUG_STR("end addr");}
 
 #endif /* DISABLE_COOJA_DEBUG */
 #endif /* COOJA_DEBUG_H_ */
