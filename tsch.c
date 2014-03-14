@@ -627,7 +627,6 @@ powercycle(struct rtimer *t, void *ptr)
 	    p = NULL;
       n = NULL;
 			if (cell->link_options & LINK_OPTION_TX) {
-
 				//is there a packet to send? if not check if it is RX too
 				if (cell->link_type == LINK_TYPE_ADVERTISING) {
 				//TODO fetch adv packets
@@ -658,7 +657,10 @@ powercycle(struct rtimer *t, void *ptr)
 					rtimer_clock_t ack_sfd_rtime = 0;
 					is_broadcast = rimeaddr_cmp(cell->node_address, &rimeaddr_null);
           //COOJA_DEBUG_STR("HERE\n");
-          if(!is_broadcast){COOJA_DEBUG_PRINTF("unicast TX %d %d %d %d %d %d %d %d\n", cell->node_address->u8[7], cell->node_address->u8[6], cell->node_address->u8[5], cell->node_address->u8[4], cell->node_address->u8[3], cell->node_address->u8[2], cell->node_address->u8[1], cell->node_address->u8[0]);}
+          if(!is_broadcast){
+          	COOJA_DEBUG_STR("unicast TX");
+          	//COOJA_DEBUG_PRINTF("unicast TX %d %d %d %d %d %d %d %d\n", cell->node_address->u8[7], cell->node_address->u8[6], cell->node_address->u8[5], cell->node_address->u8[4], cell->node_address->u8[3], cell->node_address->u8[2], cell->node_address->u8[1], cell->node_address->u8[0]);
+          }
 					we_are_sending = 1;
 					char* payload_ptr = payload;
 					//read seqno from payload!
