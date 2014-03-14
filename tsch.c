@@ -661,7 +661,9 @@ powercycle(struct rtimer *t, void *ptr)
 					rtimer_clock_t ack_sfd_rtime = 0;
 					is_broadcast = rimeaddr_cmp(&cell->node_address, &rimeaddr_null);
           //COOJA_DEBUG_STR("HERE\n");
-          if(!is_broadcast){COOJA_DEBUG_PRINTF("NO TX BROADCAST %d %d %d %d %d %d %d %d\n", cell->node_address.u8[7], cell->node_address.u8[6], cell->node_address.u8[5], cell->node_address.u8[4], cell->node_address.u8[3], cell->node_address.u8[2], cell->node_address.u8[1], cell->node_address.u8[0]);}
+          if(!is_broadcast){
+          COOJA_DEBUG_STR("NO TX BROADCAST\n");
+          }
 					we_are_sending = 1;
 					char* payload_ptr = payload;
 					//read seqno from payload!
@@ -694,8 +696,8 @@ powercycle(struct rtimer *t, void *ptr)
 						tx_time = (110 * payload_len) / 10; //110*payload_len/10=32768*337*payload_len/1000000; //sec
 
 						if (success == RADIO_TX_OK) {
-							uint8_t do_ack = (((uint8_t*)(p->ptr))[0] >> 5) & 1 == 1 ;
-							if (!do_ack) {
+							//uint8_t do_ack = (((uint8_t*)(p->ptr))[0] >> 5) & 1 == 1 ;
+							if (is_broadcast) {
 								//remove_packet_from_queue(&cell->node_address);
 								COOJA_DEBUG_STR("is_broadcast - don't wait for ack\n");
 							} else {
@@ -824,7 +826,7 @@ powercycle(struct rtimer *t, void *ptr)
 				}
 				{
 					//TODO There are small timing variations visible in cooja, which needs tuning
-					uint8_t is_broadcast = 0, len, seqno, ret;
+					static uint8_t is_broadcast = 0, len, seqno, ret;
 					uint16_t ack_sfd_time = 0;
 					rtimer_clock_t ack_sfd_rtime = 0;
 
