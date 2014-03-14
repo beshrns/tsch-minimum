@@ -310,7 +310,7 @@ set_txpower(uint8_t power)
 #define RXBPF_LOCUR (1 << 13);
 /*---------------------------------------------------------------------------*/
 /* Data structure used as the internal RX buffer */
-MEMB(rf_memb, struct received_frame_s, 2);
+MEMB(rf_memb, struct received_frame_s, 4);
 LIST(rf_list);
 /*---------------------------------------------------------------------------*/
 int

@@ -101,7 +101,7 @@ typedef struct {
 	the link may be used to send an Enhanced beacon. */
 	uint8_t link_type;
 	/* short address of neighbor */
-	rimeaddr_t node_address;
+	rimeaddr_t* node_address;
 } cell_t;
 
 typedef struct {

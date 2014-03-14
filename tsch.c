@@ -215,8 +215,8 @@ add_queue(const rimeaddr_t *addr)
 		}
 		list_add(neighbor_list, n);
 		working_on_queue = 0;
-	  COOJA_DEBUG_STR("ADD QUEUE\n");
-    COOJA_DEBUG_PRINTF("%u %u %u %u %u %u %u %u\n", addr->u8[7], addr->u8[6], addr->u8[5], addr->u8[4], addr->u8[3], addr->u8[2], addr->u8[1], addr->u8[0]);
+		COOJA_DEBUG_PRINTF("ADD QUEUE %d Succeeded\n", addr->u8[7]);
+    //COOJA_DEBUG_PRINTF("addr %u %u %u %u %u %u %u %u\n", addr->u8[7], addr->u8[6], addr->u8[5], addr->u8[4], addr->u8[3], addr->u8[2], addr->u8[1], addr->u8[0]);
 		return 1;
 	}
 	COOJA_DEBUG_PRINTF("ADD QUEUE %d FAILED\n", addr->u8[7]);
@@ -491,14 +491,11 @@ channel_check_interval(void)
     while(!(cond) && RTIMER_CLOCK_LT(now, t0));  												\
   } while(0)
 /*---------------------------------------------------------------------------*/
-static struct rtimer rt;
-
 #ifndef MIN
 #define MIN(a, b) ((a) < (b)? (a) : (b))
 #endif /* MIN */
 static int keep_radio_on = 0;
-int
-cc2420_set_channel(int c);
+int cc2420_set_channel(int c);
 #define NETSTACK_RADIO_set_channel cc2420_set_channel
 
 /* to get last packet timing information */
@@ -520,21 +517,21 @@ hop_channel(uint8_t offset)
 	return 0;
 }
 /*---------------------------------------------------------------------------*/
-#define BROADCAST_CELL_ADDRESS { { 0, 0, 0, 0, 0, 0, 0, 0 } }
-#define CELL_ADDRESS1 { { 0x00, 0x12, 0x74, 01, 00, 01, 01, 01 } }
-#define CELL_ADDRESS2 { { 0x00, 0x12, 0x74, 02, 00, 02, 02, 02 } }
+const rimeaddr_t BROADCAST_CELL_ADDRESS = { { 0, 0, 0, 0, 0, 0, 0, 0 } };
+const rimeaddr_t CELL_ADDRESS1 = { { 0x00, 0x12, 0x74, 01, 00, 01, 01, 01 } };
+const rimeaddr_t CELL_ADDRESS2 = { { 0x00, 0x12, 0x74, 02, 00, 02, 02, 02 } };
 
 
 const cell_t generic_shared_cell = {
 0xffff, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED,
 		LINK_TYPE_NORMAL,
-		BROADCAST_CELL_ADDRESS };
+		&BROADCAST_CELL_ADDRESS };
 
 const cell_t generic_eb_cell = { 0, 0, LINK_OPTION_TX, LINK_TYPE_ADVERTISING,
-BROADCAST_CELL_ADDRESS };
+&BROADCAST_CELL_ADDRESS };
 
-const cell_t cell_to_1 ={ 1, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED, LINK_TYPE_NORMAL,  CELL_ADDRESS1};
-const cell_t cell_to_2 ={ 2, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED, LINK_TYPE_NORMAL,  CELL_ADDRESS2};
+const cell_t cell_to_1 ={ 1, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED, LINK_TYPE_NORMAL,  &CELL_ADDRESS1};
+const cell_t cell_to_2 ={ 2, 0, LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED, LINK_TYPE_NORMAL,  &CELL_ADDRESS2};
 
 const cell_t * minimum_cells[8] = { &generic_eb_cell, &generic_shared_cell,
 		&generic_shared_cell, &generic_shared_cell, &generic_shared_cell,
@@ -638,7 +635,7 @@ powercycle(struct rtimer *t, void *ptr)
 				//TODO use neighbor table / map
           n=list_head(neighbor_list);
 					while (n != NULL) {
-						if (rimeaddr_cmp(&n->addr, &cell->node_address)) {
+						if (rimeaddr_cmp(&n->addr, cell->node_address)) {
               p = read_packet_from_queue(&n->addr);
 							break;
 						}
@@ -659,9 +656,9 @@ powercycle(struct rtimer *t, void *ptr)
 					static uint8_t is_broadcast = 0, len, seqno, ret;
 					uint16_t ack_sfd_time = 0;
 					rtimer_clock_t ack_sfd_rtime = 0;
-					is_broadcast = rimeaddr_cmp(&cell->node_address, &rimeaddr_null);
+					is_broadcast = rimeaddr_cmp(cell->node_address, &rimeaddr_null);
           //COOJA_DEBUG_STR("HERE\n");
-          if(!is_broadcast){COOJA_DEBUG_PRINTF("NO TX BROADCAST %d %d %d %d %d %d %d %d\n", cell->node_address.u8[7], cell->node_address.u8[6], cell->node_address.u8[5], cell->node_address.u8[4], cell->node_address.u8[3], cell->node_address.u8[2], cell->node_address.u8[1], cell->node_address.u8[0]);}
+          if(!is_broadcast){COOJA_DEBUG_PRINTF("unicast TX %d %d %d %d %d %d %d %d\n", cell->node_address->u8[7], cell->node_address->u8[6], cell->node_address->u8[5], cell->node_address->u8[4], cell->node_address->u8[3], cell->node_address->u8[2], cell->node_address->u8[1], cell->node_address->u8[0]);}
 					we_are_sending = 1;
 					char* payload_ptr = payload;
 					//read seqno from payload!
@@ -696,7 +693,7 @@ powercycle(struct rtimer *t, void *ptr)
 						if (success == RADIO_TX_OK) {
 							uint8_t do_ack = (((uint8_t*)(p->ptr))[0] >> 5) & 1 == 1 ;
 							if (!do_ack) {
-								//remove_packet_from_queue(&cell->node_address);
+								//remove_packet_from_queue(cell->node_address);
 								COOJA_DEBUG_STR("is_broadcast - don't wait for ack\n");
 							} else {
 								//delay wait for ack: after tx
@@ -744,7 +741,7 @@ powercycle(struct rtimer *t, void *ptr)
 					if (success == RADIO_TX_NOACK) {
 						p->transmissions++;
 						if (p->transmissions == macMaxFrameRetries) {
-							remove_packet_from_queue(&cell->node_address);
+							remove_packet_from_queue(cell->node_address);
 					    n->BE_value=macMinBE;
 							n->BW_value=0;
 						}
@@ -757,8 +754,8 @@ powercycle(struct rtimer *t, void *ptr)
 						ret = MAC_TX_NOACK;
 					} else if (success == RADIO_TX_OK) {
 						//TODO synchronize using ack_sfd_rtime or ack_sfd_time
-						remove_packet_from_queue(&cell->node_address);
-						if(!read_packet_from_queue(&cell->node_address)){
+						remove_packet_from_queue(cell->node_address);
+						if(!read_packet_from_queue(cell->node_address)){
 						   // if no more packets in the queue
 						   n->BW_value = 0;
 						   n->BE_value = macMinBE;
@@ -771,7 +768,7 @@ powercycle(struct rtimer *t, void *ptr)
 					} else if (success == RADIO_TX_COLLISION) {
 						p->transmissions++;
 						if (p->transmissions == macMaxFrameRetries) {
-							remove_packet_from_queue(&cell->node_address);
+							remove_packet_from_queue(cell->node_address);
 							n->BE_value=macMinBE;
 							n->BW_value=0;
 						}
@@ -785,7 +782,7 @@ powercycle(struct rtimer *t, void *ptr)
 					} else if (success == RADIO_TX_ERR) {
 						p->transmissions++;
 						if (p->transmissions == macMaxFrameRetries) {
-							remove_packet_from_queue(&cell->node_address);
+							remove_packet_from_queue(cell->node_address);
 							n->BE_value=macMinBE;
 							n->BW_value=0;
 						}
@@ -798,8 +795,8 @@ powercycle(struct rtimer *t, void *ptr)
 						ret = MAC_TX_ERR;
 					} else {
 						// successful transmission
-						remove_packet_from_queue(&cell->node_address);
-						if(!read_packet_from_queue(&cell->node_address)){
+						remove_packet_from_queue(cell->node_address);
+						if(!read_packet_from_queue(cell->node_address)){
 						   // if no more packets in the queue
 						   n->BW_value = 0;
 						   n->BE_value = macMinBE;
@@ -828,7 +825,7 @@ powercycle(struct rtimer *t, void *ptr)
 					uint16_t ack_sfd_time = 0;
 					rtimer_clock_t ack_sfd_rtime = 0;
 
-					is_broadcast = rimeaddr_cmp(&cell->node_address, &rimeaddr_null);
+					is_broadcast = rimeaddr_cmp(cell->node_address, &rimeaddr_null);
 
 					//wait before RX
 					schedule_fixed(t, start, TsTxOffset - TsLongGT);
