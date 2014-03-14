@@ -141,7 +141,7 @@ struct TSCH_packet
 	struct queuebuf * pkt; // pointer to the packet to be sent
 	uint8_t transmissions; // #transmissions performed for this packet
 	mac_callback_t sent; // callback for this packet
-	void *ptr; //??
+	void *ptr; //?? for callback ...
 };
 
 // NEIGHBOR QUEUE STRUCTURE
@@ -320,11 +320,14 @@ send_one_packet(mac_callback_t sent, void *ptr)
 	struct neighbor_queue *n;
 	uint16_t seqno;
 	const rimeaddr_t *addr = packetbuf_addr(PACKETBUF_ADDR_RECEIVER);
+	//Ask for ACK if we are sending anything otherthan broadcast
+	if(!rimeaddr_cmp(addr, &rimeaddr_null)) {
+		packetbuf_set_attr(PACKETBUF_ATTR_MAC_ACK, 1);
+	}
 	COOJA_DEBUG_ADDR(addr);
 	/* PACKETBUF_ATTR_MAC_SEQNO cannot be zero, due to a pecuilarity
 	 in framer-802154.c. */
 	seqno = (++ieee154e_vars.dsn) ? ieee154e_vars.dsn : ++ieee154e_vars.dsn;
-
 	packetbuf_set_attr(PACKETBUF_ATTR_MAC_SEQNO, seqno);
 	if (NETSTACK_FRAMER.create() < 0) {
 		return 0;
@@ -486,8 +489,8 @@ channel_check_interval(void)
 }
 /*---------------------------------------------------------------------------*/
 #define BUSYWAIT_UNTIL_ABS(cond, t0, duration)                     	    \
-  do { rtimer_clock_t now = RTIMER_NOW();                               \
-  	if(t0+duration-now>duration) break;																	\
+  do { rtimer_clock_t now = RTIMER_NOW(), t1=t0+duration;               \
+  	if((rtimer_clock_t)(t1-now)>duration) break;												\
     while(!(cond) && RTIMER_CLOCK_LT(now, t0));  												\
   } while(0)
 /*---------------------------------------------------------------------------*/
@@ -649,8 +652,10 @@ powercycle(struct rtimer *t, void *ptr)
 				{
 					// if dedicated slot or shared slot and BW_value=0, we transmit the packet
 					if(!(cell->link_options & LINK_OPTION_SHARED) || ((cell->link_options & LINK_OPTION_SHARED) && n->BW_value == 0)){
-					const void * payload = queuebuf_dataptr(p->pkt);
-					const unsigned short payload_len = queuebuf_datalen(p->pkt);
+					static void * payload = NULL;
+					static unsigned short payload_len = 0;
+					payload = queuebuf_dataptr(p->pkt);
+					payload_len = queuebuf_datalen(p->pkt);
 					//TODO There are small timing variations visible in cooja, which needs tuning
 					static uint8_t is_broadcast = 0, len, seqno, ret;
 					uint16_t ack_sfd_time = 0;
@@ -686,15 +691,16 @@ powercycle(struct rtimer *t, void *ptr)
 						PT_YIELD(&mpt);
 						//send
 						static rtimer_clock_t tx_time;
-//						tx_time = RTIMER_NOW();
+						tx_time = RTIMER_NOW();
 						success = NETSTACK_RADIO.transmit(payload_len);
 						off(keep_radio_on);
-						tx_time = (110 * payload_len) / 10; //110*payload_len/10=32768*337*payload_len/1000000; //sec
+						//tx_time = (111 * payload_len)/100; //110*payload_len/10=32768*337*payload_len/1000000; //sec
+						tx_time = RTIMER_NOW() - tx_time;
 
 						if (success == RADIO_TX_OK) {
 							//uint8_t do_ack = (((uint8_t*)(p->ptr))[0] >> 5) & 1 == 1 ;
 							if (is_broadcast) {
-								//remove_packet_from_queue(&cell->node_address);
+								//remove_packet_from_queue(cell->node_address);
 								COOJA_DEBUG_STR("is_broadcast - don't wait for ack\n");
 							} else {
 								//delay wait for ack: after tx
@@ -705,18 +711,46 @@ powercycle(struct rtimer *t, void *ptr)
 								PT_YIELD(&mpt);
 								COOJA_DEBUG_STR("wait for detecting ack\n");
 								on();
+								cca_status=0;
+								cca_status |= NETSTACK_RADIO.receiving_packet() || NETSTACK_RADIO.pending_packet() || !NETSTACK_RADIO.channel_clear();
+								if(!cca_status) {
+									schedule_fixed(t, start,
+											TsTxOffset + MIN(tx_time, wdDataDuration) + TsTxAckDelay
+													+ TsShortGT);
+									PT_YIELD(&mpt);
+									cca_status |= NETSTACK_RADIO.receiving_packet() || NETSTACK_RADIO.pending_packet() || !NETSTACK_RADIO.channel_clear();
+								}
 								//wait for detecting ACK
-								BUSYWAIT_UNTIL_ABS(
-										(cca_status = (NETSTACK_RADIO.receiving_packet() || NETSTACK_RADIO.pending_packet() || NETSTACK_RADIO.channel_clear() == 0)),
-										start, TsTxOffset + MIN(tx_time, wdDataDuration) + TsTxAckDelay + TsShortGT);
+//								BUSYWAIT_UNTIL_ABS(
+//										(cca_status |= (NETSTACK_RADIO.receiving_packet() || NETSTACK_RADIO.pending_packet() || NETSTACK_RADIO.channel_clear() == 0)),
+//										start, TsTxOffset + MIN(tx_time, wdDataDuration) + TsTxAckDelay + TsShortGT);
 								if (cca_status) {
 									COOJA_DEBUG_STR("ACK detected\n");
 									uint8_t ackbuf[ACK_LEN + EXTRA_ACK_LEN];
-									ack_sfd_rtime = RTIMER_NOW();
-									ack_sfd_time = get_sfd_start_time();
-
-									schedule_fixed(t, ack_sfd_rtime, wdAckDuration);
-									PT_YIELD(&mpt);
+									if(!NETSTACK_RADIO.pending_packet()) {
+										COOJA_DEBUG_STR("not pending_packet\n");
+										if(NETSTACK_RADIO.receiving_packet()) {
+											COOJA_DEBUG_STR("receiving_packet\n");
+											//ack_sfd_rtime = RTIMER_NOW();
+											//ack_sfd_time = MIN(get_sfd_start_time(), ack_sfd_rtime);
+											schedule_fixed(t, start,
+													TsTxOffset + MIN(tx_time, wdDataDuration) +
+													TsTxAckDelay + TsShortGT + wdAckDuration);
+											PT_YIELD(&mpt);
+										} else {
+//											schedule_fixed(t, start,
+//													TsTxOffset + MIN(tx_time, wdDataDuration) +
+//													TsTxAckDelay + TsShortGT + wdAckDuration);
+//											PT_YIELD(&mpt);
+										}
+										int cc2420_pending_irq(void);
+										int cc2420_interrupt(void);
+										if(cc2420_pending_irq()) {
+											COOJA_DEBUG_STR("cc2420_pending_irq\n");
+											cc2420_interrupt();
+										}
+									}
+									COOJA_DEBUG_STR("ACK Read:\n");
 
 									len = NETSTACK_RADIO.read(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
 
@@ -874,7 +908,7 @@ powercycle(struct rtimer *t, void *ptr)
 						extern volatile uint8_t last_acked;
 						if (last_acked && !is_broadcast) {
 							COOJA_DEBUG_STR("last_rf->acked");
-							schedule_fixed(t, rx_end_time, TsTxAckDelay - delayTx + 1);
+							schedule_fixed(t, rx_end_time, TsTxAckDelay - delayTx);
 							PT_YIELD(&mpt);
 							COOJA_DEBUG_STR("send_ack()");
 							void send_ack(void);
