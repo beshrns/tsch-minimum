@@ -45,8 +45,12 @@
 
 #define UDP_EXAMPLE_ID  190
 
-#define DEBUG DEBUG_PRINT
-#include "net/uip-debug.h"
+//#define DEBUG DEBUG_PRINT
+//#include "net/uip-debug.h"
+
+#include "cooja-debug.h"
+#define PRINTF COOJA_DEBUG_PRINTF
+#define PRINT6ADDR COOJA_DEBUG_ADDR16
 
 #ifndef PERIOD
 #define PERIOD 60

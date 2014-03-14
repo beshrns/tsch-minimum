@@ -40,8 +40,12 @@
 #include <string.h>
 #include <ctype.h>
 
-#define DEBUG DEBUG_PRINT
-#include "net/uip-debug.h"
+//#define DEBUG DEBUG_PRINT
+//#include "net/uip-debug.h"
+
+#include "cooja-debug.h"
+#define PRINTF COOJA_DEBUG_PRINTF
+#define PRINT6ADDR COOJA_DEBUG_ADDR16
 
 #define UIP_IP_BUF   ((struct uip_ip_hdr *)&uip_buf[UIP_LLH_LEN])
 

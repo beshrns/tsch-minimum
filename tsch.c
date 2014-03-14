@@ -213,6 +213,8 @@ add_queue(const rimeaddr_t *addr)
 		COOJA_DEBUG_PRINTF("ADD QUEUE %d\n", addr->u8[7]);
 		return 1;
 	}
+	COOJA_DEBUG_PRINTF("ADD QUEUE %d FAILED\n", addr->u8[7]);
+
 	working_on_queue = 0;
 	return 0;
 }
@@ -512,7 +514,7 @@ hop_channel(uint8_t offset)
 	return 0;
 }
 /*---------------------------------------------------------------------------*/
-#define BROADCAST_CELL_ADDRESS { { 0, 0 } }
+#define BROADCAST_CELL_ADDRESS { { 0, 0, 0, 0, 0, 0, 0, 0 } }
 #define CELL_ADDRESS1 { { 0x00, 0x12, 0x74, 01, 00, 01, 01, 01 } }
 #define CELL_ADDRESS2 { { 0x00, 0x12, 0x74, 02, 00, 02, 02, 02 } }
 
