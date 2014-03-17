@@ -70,7 +70,8 @@ volatile int need_flush=0;
 //#endif
 #define ACK_LEN (3)
 
-#define FIFOP_THRESHOLD (ACK_LEN+EXTRA_ACK_LEN-1)
+#define FIFOP_THRESHOLD (ACK_LEN+EXTRA_ACK_LEN)
+#undef CC2420_CONF_AUTOACK
 #define CC2420_CONF_AUTOACK 0
 
 #ifndef CC2420_CONF_CHANNEL
@@ -237,7 +238,7 @@ on(void)
   CC2420_ENABLE_FIFOP_INT();
   strobe(CC2420_SRXON);
 
-  BUSYWAIT_UNTIL(status() & (BV(CC2420_XOSC16M_STABLE)), RTIMER_SECOND / 100);
+  BUSYWAIT_UNTIL(status() & (BV(CC2420_XOSC16M_STABLE)), RTIMER_SECOND / 10);
 
   ENERGEST_ON(ENERGEST_TYPE_LISTEN);
   receive_on = 1;
@@ -251,7 +252,7 @@ off(void)
   receive_on = 0;
 
   /* Wait for transmission to end before turning radio off. */
-  BUSYWAIT_UNTIL(!(status() & BV(CC2420_TX_ACTIVE)), RTIMER_SECOND / 200);
+  BUSYWAIT_UNTIL(!(status() & BV(CC2420_TX_ACTIVE)), RTIMER_SECOND / 100);
 
   ENERGEST_OFF(ENERGEST_TYPE_LISTEN);
   strobe(CC2420_SRFOFF);
@@ -678,7 +679,7 @@ frame80254_parse_irq(uint8_t *data, uint8_t len)
 		return 0;
 	}
 	/* decode the FCF */
-	uint8_t do_ack = (data[0] >> 5) & 1 == 1 ? DO_ACK : 0;
+	uint8_t do_ack = ((data[0] >> 5) & 1) == 1 ? DO_ACK : 0;
 	uint8_t is_data = (data[0] & 7) == FRAME802154_DATAFRAME ? IS_DATA : 0;
 	uint8_t is_ack = (data[0] & 7) == FRAME802154_ACKFRAME ? IS_ACK : 0;
 
@@ -691,7 +692,7 @@ void
 cc2420_arch_sfd_sync(rtimer_clock_t start_time)
 {
   /* Start Timer_B in continuous mode. */
-  //TBCTL |= MC1;
+  TBCTL |= MC1;
   cell_start_time = start_time;
   TBR = RTIMER_NOW();
 }
@@ -714,7 +715,10 @@ cc2420_interrupt(void)
   //{0x02, 0x00, seqno, 0x02, 0x1e, ack_status&0xff, (ack_status>>8)&0xff};
   static unsigned char ackbuf[1+ACK_LEN + EXTRA_ACK_LEN]; // = {ACK_LEN + EXTRA_ACK_LEN + AUX_LEN, 0x02, 0x00, seqno, 0x02, 0x1e, ack_status_LSB, ack_status_MSB};
   unsigned char* buf_ptr = NULL;
+//  process_poll(&cc2420_process);
+
   last_acked=0;
+
 #if CC2420_TIMETABLE_PROFILING
   timetable_clear(&cc2420_timetable);
   TIMETABLE_TIMESTAMP(cc2420_timetable, "interrupt");
@@ -722,7 +726,7 @@ cc2420_interrupt(void)
 
   last_packet_timestamp = cc2420_sfd_start_time;
   /* If the lock is taken, we cannot access the FIFO. */
-  if(/*locked || need_flush ||*/ !CC2420_FIFO_IS_1) {
+  if(locked || need_flush || !CC2420_FIFO_IS_1) {
   	COOJA_DEBUG_STR("! locked || need_flush || !CC2420_FIFO_IS_1");
     need_flush = 1;
 		if(last_packet_timestamp == cc2420_sfd_start_time) {
@@ -768,7 +772,7 @@ cc2420_interrupt(void)
   	COOJA_DEBUG_STR("irq rf=NULL");
   	nack = 1;
   	buf_ptr = ackbuf;
-  	len_a = len > ACK_LEN + EXTRA_ACK_LEN ? ACK_LEN + EXTRA_ACK_LEN : len;
+  	len_a = len > FIFOP_THRESHOLD ? FIFOP_THRESHOLD : len;
   }
   len_b = len - len_a;
 	CC2420_READ_FIFO_BUF(buf_ptr, len_a);
@@ -793,7 +797,7 @@ cc2420_interrupt(void)
 		if(time_difference >=0) {
 			ack_status=time_difference & 0x07ff;
 		} else {
-			ack_status=(-time_difference) & 0x07ff + 0x0800;
+			ack_status=((-time_difference) & 0x07ff) + 0x0800;
 		}
 		if(nack) {
 			ack_status |= 0x8000;
@@ -811,6 +815,8 @@ cc2420_interrupt(void)
 		/* Write ack in fifo */
 		CC2420_STROBE(CC2420_SFLUSHTX); /* Flush Tx fifo */
 		CC2420_WRITE_FIFO_BUF(ackbuf, 1+ACK_LEN + EXTRA_ACK_LEN);
+//		ackbuf[0] = ACK_LEN + AUX_LEN; //total_len
+//	  CC2420_WRITE_FIFO_BUF(ackbuf, ACK_LEN+1);
 	}
 
 	/* Wait for end of reception */
@@ -872,12 +878,38 @@ cc2420_interrupt(void)
 //  }
 //  return 1;
 }
+/*---------------------------------------------------------------------------*/
 void send_ack(void) {
 	COOJA_DEBUG_STR("Send ACK");
+	on();
 	strobe(CC2420_STXON); /* Send ACK */
   off();
   last_rf = NULL;
   last_acked = 0;
+}
+/*---------------------------------------------------------------------------*/
+int
+read_ack(void *buf, int alen) {
+  GET_LOCK();
+  BUSYWAIT_UNTIL(!CC2420_SFD_IS_1, RTIMER_SECOND / 100);
+  int len, footer1;
+  CC2420_READ_FIFO_BYTE(len);
+  if(buf && len>0) {
+  	alen = (len > alen) ? alen : len ;
+  	COOJA_DEBUG_STR("ACK len>0");
+		int overflow = CC2420_FIFOP_IS_1 && !CC2420_FIFO_IS_1;
+		CC2420_READ_RAM_BYTE(footer1, RXFIFO_ADDR(len + AUX_LEN));
+		if(!overflow && (footer1 & FOOTER1_CRC_OK)) { /* CRC is correct */
+	  	COOJA_DEBUG_STR("ACK !overflow && (footer1 & FOOTER1_CRC_OK)");
+			CC2420_READ_FIFO_BUF(buf, len);
+			len = (((uint8_t*)buf)[0] & 7) == FRAME802154_ACKFRAME ? len : -1;
+		} else {
+			len = 0;
+		}
+  }
+  CC2420_CLEAR_FIFOP_INT();
+  RELEASE_LOCK();
+  return len;
 }
 /*---------------------------------------------------------------------------*/
 PROCESS_THREAD(cc2420_process, ev, data)
@@ -1085,6 +1117,18 @@ cc2420_set_cca_threshold(int value)
   RELEASE_LOCK();
 }
 /*---------------------------------------------------------------------------*/
+void
+cc2420_address_decode(uint8_t enable)
+{
+	/* Turn on/off automatic packet acknowledgment and address decoding. */
+	uint8_t reg = getreg(CC2420_MDMCTRL0);
+	if(enable) {
+		reg = (reg & ~AUTOACK) | ADR_DECODE;
+	} else {
+		reg &= ~AUTOACK & ~ADR_DECODE;
+	}
+	setreg(CC2420_MDMCTRL0, reg);
+}
 /*---------------------------------------------------------------------------*/
 int
 cc2420_pending_irq(void)

@@ -570,26 +570,31 @@ static int
 powercycle(struct rtimer *t, void *ptr);
 /* Schedule a wakeup from a reference time for a specific duration.
  * Provides basic protection against missed deadlines and timer overflows */
-static void
+static uint8_t
 schedule_fixed(struct rtimer *t, rtimer_clock_t ref_time,
 		rtimer_clock_t duration)
 {
-	int r;
+	int r, ret=1;
 	rtimer_clock_t now = RTIMER_NOW() + 1;
 	ref_time += duration;
 	if (ref_time - now > duration) {
 //		COOJA_DEBUG_PRINTF("Missed deadline or timer overflow deadline %x < now %x\n", ref_time-now, duration);
 		COOJA_DEBUG_STR("schedule_fixed: missed deadline!\n");
+		// XXX! fix so missed deadline does not corrupt the whole schedule
 		ref_time = RTIMER_NOW() + 1;
+		ret=0;
 	}
 
 	r = rtimer_set(t, ref_time, 1, (void
 	(*)(struct rtimer *, void *)) powercycle, NULL);
 	if (r != RTIMER_OK) {
 		COOJA_DEBUG_STR("schedule_fixed: could not set rtimer\n");
+		ret*=2;
 	}
+	return ret;
 }
 /*---------------------------------------------------------------------------*/
+int	cc2420_address_decode(uint8_t enable);
 static volatile uint8_t waiting_for_radio_interrupt = 0;
 extern volatile rtimer_clock_t rx_end_time;
 /*---------------------------------------------------------------------------*/
@@ -682,7 +687,7 @@ powercycle(struct rtimer *t, void *ptr)
 					uint8_t cca_status = 0;
 					BUSYWAIT_UNTIL_ABS(!(cca_status |= NETSTACK_RADIO.channel_clear()),
 							start, TsCCAOffset + TsCCA);
-					off(keep_radio_on);
+//					off(keep_radio_on);
 					if (cca_status == 0) {
 						success = RADIO_TX_COLLISION;
 					} else {
@@ -693,7 +698,7 @@ powercycle(struct rtimer *t, void *ptr)
 						static rtimer_clock_t tx_time;
 						tx_time = RTIMER_NOW();
 						success = NETSTACK_RADIO.transmit(payload_len);
-						off(keep_radio_on);
+//						off(keep_radio_on);
 						//tx_time = (111 * payload_len)/100; //110*payload_len/10=32768*337*payload_len/1000000; //sec
 						tx_time = RTIMER_NOW() - tx_time;
 
@@ -710,6 +715,7 @@ powercycle(struct rtimer *t, void *ptr)
 												- TsShortGT);
 								PT_YIELD(&mpt);
 								COOJA_DEBUG_STR("wait for detecting ack\n");
+								waiting_for_radio_interrupt = 1;
 								on();
 								cca_status=0;
 								cca_status |= NETSTACK_RADIO.receiving_packet() || NETSTACK_RADIO.pending_packet() || !NETSTACK_RADIO.channel_clear();
@@ -731,8 +737,8 @@ powercycle(struct rtimer *t, void *ptr)
 										COOJA_DEBUG_STR("not pending_packet\n");
 										if(NETSTACK_RADIO.receiving_packet()) {
 											COOJA_DEBUG_STR("receiving_packet\n");
-											//ack_sfd_rtime = RTIMER_NOW();
-											//ack_sfd_time = MIN(get_sfd_start_time(), ack_sfd_rtime);
+											ack_sfd_rtime = RTIMER_NOW();
+											ack_sfd_time = MIN(get_sfd_start_time(), ack_sfd_rtime);
 											schedule_fixed(t, start,
 													TsTxOffset + MIN(tx_time, wdDataDuration) +
 													TsTxAckDelay + TsShortGT + wdAckDuration);
@@ -743,29 +749,31 @@ powercycle(struct rtimer *t, void *ptr)
 //													TsTxAckDelay + TsShortGT + wdAckDuration);
 //											PT_YIELD(&mpt);
 										}
+
+										int	read_ack(void *buf, int);
 										int cc2420_pending_irq(void);
 										int cc2420_interrupt(void);
-										if(cc2420_pending_irq()) {
-											COOJA_DEBUG_STR("cc2420_pending_irq\n");
-											cc2420_interrupt();
+										if(cc2420_pending_irq() || !NETSTACK_RADIO.pending_packet()) {
+											COOJA_DEBUG_STR("ACK read_ack:\n");
+											len = read_ack(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
 										}
+									} else {
+										COOJA_DEBUG_STR("ACK Read:\n");
+										len = NETSTACK_RADIO.read(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
 									}
-									COOJA_DEBUG_STR("ACK Read:\n");
-
-									len = NETSTACK_RADIO.read(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
-
-									if ((len == ACK_LEN + EXTRA_ACK_LEN) && seqno == ackbuf[2]) {
+									if ((len == ACK_LEN + EXTRA_ACK_LEN || len == ACK_LEN) && seqno == ackbuf[2]) {
 										//TODO get timing information
 										success = RADIO_TX_OK;
 										COOJA_DEBUG_STR("ACK ok\n");
 									} else {
 										success = RADIO_TX_NOACK;
 										COOJA_DEBUG_STR("ACK not ok!\n");
-										// COOJA_DEBUG_PRINTF("%u: %x, %x, %x ?= %x, %x, %x, %x, %x\n", len, ackbuf[0], ackbuf[1],ackbuf[2],seqno,ackbuf[3],ackbuf[4],ackbuf[5],ackbuf[6]);
+										COOJA_DEBUG_PRINTF("%u: %x, %x, %x ?= %x, %x, %x, %x, %x\n", len, ackbuf[0], ackbuf[1],ackbuf[2],seqno,ackbuf[3],ackbuf[4],ackbuf[5],ackbuf[6]);
 									}
 								} else {
 									COOJA_DEBUG_STR("No ack!\n");
 								}
+								waiting_for_radio_interrupt = 0;
 							}
 							we_are_sending = 0;
 							off(keep_radio_on);
