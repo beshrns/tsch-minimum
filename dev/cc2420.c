@@ -242,6 +242,8 @@ on(void)
 
   ENERGEST_ON(ENERGEST_TYPE_LISTEN);
   receive_on = 1;
+  COOJA_DEBUG_STR("cc2420_on2\n");
+
 }
 static void
 off(void)
@@ -700,10 +702,14 @@ cc2420_arch_sfd_sync(rtimer_clock_t start_time)
 volatile struct received_frame_s *last_rf;
 volatile uint8_t last_acked;
 volatile rtimer_clock_t rx_end_time;
+#include "dev/leds.h"
+
 int
 cc2420_interrupt(void)
 {
 	COOJA_DEBUG_STR("cc2420_interrupt\n");
+	leds_on(LEDS_RED);
+
 	uint8_t nack = 0;
   uint8_t len, fcf, seqno, footer1, is_data, for_us, is_ack;
   uint8_t len_a, len_b;
