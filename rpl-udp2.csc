@@ -94,7 +94,7 @@
   <plugin>
     se.sics.cooja.plugins.SimControl
     <width>280</width>
-    <z>1</z>
+    <z>3</z>
     <height>160</height>
     <location_x>400</location_x>
     <location_y>0</location_y>
@@ -124,7 +124,7 @@
       <coloring />
     </plugin_config>
     <width>614</width>
-    <z>0</z>
+    <z>2</z>
     <height>240</height>
     <location_x>402</location_x>
     <location_y>159</location_y>
@@ -137,10 +137,10 @@
       <showRadioRXTX />
       <showRadioHW />
       <showLEDs />
-      <zoomfactor>9414.440378758267</zoomfactor>
+      <zoomfactor>149.90473614904664</zoomfactor>
     </plugin_config>
     <width>1520</width>
-    <z>3</z>
+    <z>1</z>
     <height>166</height>
     <location_x>2</location_x>
     <location_y>402</location_y>
@@ -174,11 +174,11 @@
   <plugin>
     se.sics.cooja.mspmote.plugins.MspCLI
     <mote_arg>0</mote_arg>
-    <width>855</width>
-    <z>2</z>
-    <height>500</height>
-    <location_x>593</location_x>
-    <location_y>450</location_y>
+    <width>401</width>
+    <z>0</z>
+    <height>561</height>
+    <location_x>1519</location_x>
+    <location_y>3</location_y>
   </plugin>
 </simconf>
 

@@ -2,6 +2,7 @@
 #define __TSCH_PARAMETERS_H__
 #include "net/rime/rimeaddr.h"
 
+#define NACK_FLAG 0x8000
 typedef uint32_t asn_t;
 
 typedef struct {

@@ -344,19 +344,7 @@ cc2420_init(void)
 
   /* Turn on/off automatic packet acknowledgment and address decoding. */
   reg = getreg(CC2420_MDMCTRL0);
-
-//#if CC2420_CONF_AUTOACK
-//  reg |= AUTOACK | ADR_DECODE;
-//#else
-//  //reg |= ADR_DECODE;
-//  //reg &= ~(AUTOACK | ADR_DECODE);
-//  //reg = (reg & ~AUTOACK) | ADR_DECODE;
-//#endif /* CC2420_CONF_AUTOACK */
-  //reg |= AUTOACK | ADR_DECODE;
-  //reg &= ~(AUTOACK | ADR_DECODE);
-  //reg |= ADR_DECODE;
   reg = (reg & ~AUTOACK) | ADR_DECODE;
-  //reg &= ~(AUTOACK | ADR_DECODE);
   setreg(CC2420_MDMCTRL0, reg);
 
   /* Set transmission turnaround time to the lower setting (8 symbols
@@ -689,14 +677,39 @@ frame80254_parse_irq(uint8_t *data, uint8_t len)
 }
 /*---------------------------------------------------------------------------*/
 volatile rtimer_clock_t cell_start_time = 0;
-
+/* Configures timer B to capture SFD edge (start, end, both),
+ * and sets the cell start time for calculating synchronization in ACK */
 void
-cc2420_arch_sfd_sync(rtimer_clock_t start_time)
+cc2420_arch_sfd_sync(rtimer_clock_t start_time, uint8_t capture_start_sfd, uint8_t capture_end_sfd)
 {
+//#define CM_0                (0<<14) /* Capture mode: 0 - disabled */
+//#define CM_1                (1<<14) /* Capture mode: 1 - pos. edge */
+//#define CM_2                (2<<14) /* Capture mode: 1 - neg. edge */
+//#define CM_3                (3<<14) /* Capture mode: 1 - both edges */
+
+	if(capture_start_sfd & capture_end_sfd) {
+	  TBCCTL1 = CM_3 | CAP | SCS;
+	} else if(capture_start_sfd) {
+	  TBCCTL1 = CM_1 | CAP | SCS;
+	} else if(capture_end_sfd){
+	  TBCCTL1 = CM_2 | CAP | SCS;
+	} else { //disabled
+	  TBCCTL1 = CM_0 | CAP | SCS;
+	}
+  /* Enable interrupt? */
+  TBCCTL1 |= CCIE;
+
   /* Start Timer_B in continuous mode. */
   TBCTL |= MC1;
   cell_start_time = start_time;
   TBR = RTIMER_NOW();
+}
+/*---------------------------------------------------------------------------*/
+/* Read the timer value when the last SFD edge was captured,
+ * this depends on SFD timer configuration */
+uint16_t cc2420_read_sfd_timer(void) {
+	uint16_t t = TBCCR1;
+	return t;
 }
 /*---------------------------------------------------------------------------*/
 volatile struct received_frame_s *last_rf;
@@ -718,7 +731,6 @@ cc2420_interrupt(void)
   uint8_t ret = 0;
   struct received_frame_s *rf;
   uint16_t ack_status=0;
-  //{0x02, 0x00, seqno, 0x02, 0x1e, ack_status&0xff, (ack_status>>8)&0xff};
   static unsigned char ackbuf[1+ACK_LEN + EXTRA_ACK_LEN]; // = {ACK_LEN + EXTRA_ACK_LEN + AUX_LEN, 0x02, 0x00, seqno, 0x02, 0x1e, ack_status_LSB, ack_status_MSB};
   unsigned char* buf_ptr = NULL;
 //  process_poll(&cc2420_process);
@@ -811,7 +823,7 @@ cc2420_interrupt(void)
 		//ackbuf[1+ACK_LEN + EXTRA_ACK_LEN] = {ACK_LEN + EXTRA_ACK_LEN + AUX_LEN, 0x02, 0x00, seqno, 0x02, 0x1e, ack_status_LSB, ack_status_MSB};
 		ackbuf[0] = ACK_LEN + EXTRA_ACK_LEN + AUX_LEN; //total_len
 		ackbuf[1] = 0x02;
-		ackbuf[2] = 0x00;
+		ackbuf[2] = 0x22; //b9:IE-list-present=1 - b12-b13:frame version=2
 		/* Append IE timesync */
 		ackbuf[3] = seqno;
 		ackbuf[4] = 0x02;
@@ -830,7 +842,8 @@ cc2420_interrupt(void)
 		while(CC2420_SFD_IS_1);
 	}
 	COOJA_DEBUG_STR("end CC2420_SFD_IS_1");
-	rx_end_time = RTIMER_NOW();
+	//read time of down edge of SFD
+	rx_end_time = cc2420_read_sfd_timer();//RTIMER_NOW();
 	off();
 	//XXX rx_end_time should not be 0
 	if(!rx_end_time) {
