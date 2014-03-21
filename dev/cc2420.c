@@ -810,8 +810,8 @@ cc2420_interrupt(void)
 	if(do_ack) {   /* Prepare ack */
 		COOJA_DEBUG_STR("do_ack");
 		//calculating sync
-		int16_t time_difference = (uint16_t)(cell_start_time + TsTxOffset) - cc2420_sfd_start_time;
-		time_difference = (time_difference * 3051)/100;
+		int32_t time_difference_32 = (uint16_t)(cell_start_time + TsTxOffset) - cc2420_sfd_start_time;
+		int16_t time_difference = (int16_t)(time_difference_32 = (time_difference_32 * 3051)/100);
 		if(time_difference >=0) {
 			ack_status=time_difference & 0x07ff;
 		} else {

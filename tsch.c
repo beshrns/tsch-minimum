@@ -337,12 +337,8 @@ get_next_packet_for_shared_slot_tx(void) {
 	}
 	struct TSCH_packet * p = NULL;
 	while(p==NULL && last_neighbor_tx != NULL) {
-		last_neighbor_tx = nbr_table_next(neighbor_list, last_neighbor_tx);
-		//if wrapping table boundaries, go back to head
-		if(last_neighbor_tx == NULL) {
-			last_neighbor_tx = nbr_table_head(neighbor_list);
-		}
 		p = read_packet_from_neighbor_queue( last_neighbor_tx );
+		last_neighbor_tx = nbr_table_next(neighbor_list, last_neighbor_tx);
 	}
 	return p;
 }
@@ -666,40 +662,45 @@ powercycle(struct rtimer *t, void *ptr)
 	 * otherwise, schedule next wakeup
 	 */
 	PT_BEGIN(&mpt);
-		static uint16_t timeslot = 0;
-		static int16_t drift = 0; //estimated drift to all time source neighbors
+	static uint16_t timeslot = 0;
+	static int32_t drift = 0; //estimated drift to all time source neighbors
 
-		static cell_t * cell = NULL;
-		static struct TSCH_packet* p = NULL;
-		static struct neighbor_queue *n = NULL;
-		start = RTIMER_NOW();
-		//while MAC-RDC is not disabled, and while its synchronized
-		while (ieee154e_vars.is_sync && ieee154e_vars.state != TSCH_OFF) {
-			COOJA_DEBUG_STR("Cell start\n");
-			/* sync with cycle start and enable capturing start & end sfd*/
-			cc2420_arch_sfd_sync(start, 1, 1);
-			leds_on(LEDS_GREEN);
-			cell = get_cell(timeslot);
-			if (cell == NULL || working_on_queue) {
-				COOJA_DEBUG_STR("Off cell\n");
-				//off cell
-				off(keep_radio_on);
-			} else {
-				hop_channel(cell->channel_offset);
-				p = NULL;
-				n = NULL;
-				if (cell->link_options & LINK_OPTION_TX) {
-					//is there a packet to send? if not check if it is RX too
-					if (cell->link_type == LINK_TYPE_ADVERTISING) {
-						//TODO fetch adv packets
-					} else { //NORMAL link
-						//TODO use neighbor table / map
-						n = neighbor_queue_from_addr(cell->node_address);
-						if (n != NULL) {
-							p = read_packet_from_neighbor_queue(n);
-						}
+	static cell_t * cell = NULL;
+	static struct TSCH_packet* p = NULL;
+	static struct neighbor_queue *n = NULL;
+	start = RTIMER_NOW();
+	//while MAC-RDC is not disabled, and while its synchronized
+	while (ieee154e_vars.is_sync && ieee154e_vars.state != TSCH_OFF) {
+		COOJA_DEBUG_STR("Cell start\n");
+		/* sync with cycle start and enable capturing start & end sfd*/
+		cc2420_arch_sfd_sync(start, 1, 1);
+		leds_on(LEDS_GREEN);
+		cell = get_cell(timeslot);
+		if (cell == NULL || working_on_queue) {
+			COOJA_DEBUG_STR("Off cell\n");
+			//off cell
+			off(keep_radio_on);
+		} else {
+			hop_channel(cell->channel_offset);
+			p = NULL;
+			n = NULL;
+			//is there a packet to send? if not check if this slot is RX too
+			if (cell->link_options & LINK_OPTION_TX) {
+				//is it for ADV/EB?
+				if (cell->link_type == LINK_TYPE_ADVERTISING) {
+					//TODO fetch adv/EB packets
+				} else { //NORMAL link
+					//pick a packet from the neighbors queue who is associated with this cell
+					n = neighbor_queue_from_addr(cell->node_address);
+					if (n != NULL) {
+						p = read_packet_from_neighbor_queue(n);
+					}
+					//if there it is a shared broadcast slot and there were no broadcast packets, pick any unicast packet
+					if(p==NULL && rimeaddr_cmp(cell->node_address, &BROADCAST_CELL_ADDRESS) && (cell->link_options & LINK_OPTION_SHARED)) {
+						p = get_next_packet_for_shared_slot_tx();
 					}
 				}
+			}
 
 			//Is it a TX slot and Is there a packet to send?
 			if ((cell->link_options & LINK_OPTION_TX) && p != NULL) {
@@ -716,7 +717,7 @@ powercycle(struct rtimer *t, void *ptr)
 					static uint8_t is_broadcast = 0, len, seqno, ret;
 					uint16_t ack_sfd_time = 0;
 					rtimer_clock_t ack_sfd_rtime = 0;
-					is_broadcast = rimeaddr_cmp(cell->node_address, &rimeaddr_null);
+					is_broadcast = rimeaddr_cmp(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER), &rimeaddr_null);
 					if (!is_broadcast) {
 						COOJA_DEBUG_STR("unicast\n");
 					}
@@ -1006,7 +1007,7 @@ powercycle(struct rtimer *t, void *ptr)
 							COOJA_DEBUG_STR("RX is_broadcast cell");
 						}
 						extern volatile uint8_t last_acked;
-						if (last_acked && !is_broadcast) {
+						if (last_acked) {
 							COOJA_DEBUG_STR("last_rf->acked");
 							schedule_fixed(t, rx_end_time, TsTxAckDelay - delayTx);
 							PT_YIELD(&mpt);
@@ -1031,16 +1032,13 @@ powercycle(struct rtimer *t, void *ptr)
 		duration = dt * TsSlotDuration;
 
 		//XXX correct on timeslot boundaries
-		static int16_t correction = 5;//5;
 		if (!next_timeslot) {
-			if (RTIMER_NOW() < start + duration + correction + 1) {
-				COOJA_DEBUG_STR("New slot frame: no overflow");
-				correction = drift;
-				duration += correction;
-			} else {
-				correction += drift;
-				COOJA_DEBUG_STR("New slot frame: no correction!!");
-			}
+//			if (RTIMER_NOW() < start + duration + correction + 1) {
+				COOJA_DEBUG_STR("New slot frame: correction");
+				//calculating sync --convert from microseconds to RTIMER
+				int32_t time_difference_32 = (drift*100)/3051;
+				duration += time_difference_32;
+				drift=0;
 		}
 //		COOJA_DEBUG_PRINTF("Schedule next ON slot now 0x%x, deadline 0x%x", RTIMER_NOW(),start);
 		timeslot = next_timeslot;
@@ -1064,32 +1062,32 @@ tsch_associate(void)
 	COOJA_DEBUG_STR("tsch_associate\n");
 	waiting_for_radio_interrupt = 0;
 	we_are_sending = 0;
-	working_on_queue = 0;
 	//for now assume we are in sync
 	ieee154e_vars.is_sync = 1;
 	//something other than 0 for now
 	ieee154e_vars.state = TSCH_ASSOCIATED;
 	//process the schedule, to create queues and find time-sources (time-keeping)
-	struct neighbor_queue *n;
-	uint8_t i = 0;
-	for(i=0; i<TOTAL_LINKS; i++) {
-		//add queues for neighbors with tx links and for time-sources
-		if( (links_list[i]->link_options & LINK_OPTION_TIME_KEEPING)
-				|| (links_list[i]->link_options & LINK_OPTION_TX) ) {
-			rimeaddr_t *addr = links_list[i]->node_address;
-			/* Look for the neighbor entry */
-			n = neighbor_queue_from_addr(addr);
-			if (n == NULL) {
-				//add new neighbor to list of neighbors
-				COOJA_DEBUG_STR("Add new neighbor to list of neighbors");
-				n=add_queue(addr);
-			}
-			if( n!= NULL ) {
-				n->time_source = links_list[i]->link_options & LINK_OPTION_TIME_KEEPING;
+	if(!working_on_queue) {
+		struct neighbor_queue *n;
+		uint8_t i = 0;
+		for(i=0; i<TOTAL_LINKS; i++) {
+			//add queues for neighbors with tx links and for time-sources
+			if( (links_list[i]->link_options & LINK_OPTION_TIME_KEEPING)
+					|| (links_list[i]->link_options & LINK_OPTION_TX) ) {
+				rimeaddr_t *addr = links_list[i]->node_address;
+				/* Look for the neighbor entry */
+				n = neighbor_queue_from_addr(addr);
+				if (n == NULL) {
+					//add new neighbor to list of neighbors
+					COOJA_DEBUG_STR("Add new neighbor to list of neighbors");
+					n=add_queue(addr);
+				}
+				if( n!= NULL ) {
+					n->time_source = links_list[i]->link_options & LINK_OPTION_TIME_KEEPING;
+				}
 			}
 		}
 	}
-
 	start = RTIMER_NOW();
 	schedule_fixed(&t, start, TsSlotDuration);
 }
@@ -1106,6 +1104,7 @@ init(void)
 	ieee154e_vars.sync_timeout = 0; //30sec/slotDuration - (asn-asn0)*slotDuration
 	//memb_init(&neighbor_memb);
 	nbr_table_register(neighbor_list, NULL);
+	working_on_queue = 0;
 
 	//schedule next wakeup? or leave for higher layer to decide? i.e, scan, ...
 	tsch_associate();
