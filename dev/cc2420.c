@@ -767,7 +767,7 @@ cc2420_interrupt(void)
 			while(CC2420_SFD_IS_1);
 		}
 		COOJA_DEBUG_STR("end CC2420_SFD_IS_1");
-		rx_end_time = RTIMER_NOW();
+		rx_end_time = cc2420_read_sfd_timer(); //RTIMER_NOW();
 		off();
     RELEASE_LOCK();
     COOJA_DEBUG_STR("cc2420_interrupt end\n");
@@ -777,7 +777,6 @@ cc2420_interrupt(void)
 	len -= AUX_LEN;
 	/* Allocate space to store the received frame */
 	rf=memb_alloc(&rf_memb);
-	//rf=NULL; //XXX inject error
   if(rf != NULL) {
   	COOJA_DEBUG_STR("irq rf!=NULL memb_alloc ok");
   	nack = 0;
@@ -833,8 +832,6 @@ cc2420_interrupt(void)
 		/* Write ack in fifo */
 		CC2420_STROBE(CC2420_SFLUSHTX); /* Flush Tx fifo */
 		CC2420_WRITE_FIFO_BUF(ackbuf, 1+ACK_LEN + EXTRA_ACK_LEN);
-//		ackbuf[0] = ACK_LEN + AUX_LEN; //total_len
-//	  CC2420_WRITE_FIFO_BUF(ackbuf, ACK_LEN+1);
 	}
 
 	/* Wait for end of reception */
@@ -843,7 +840,7 @@ cc2420_interrupt(void)
 	}
 	COOJA_DEBUG_STR("end CC2420_SFD_IS_1");
 	//read time of down edge of SFD
-	rx_end_time = cc2420_read_sfd_timer();//RTIMER_NOW();
+	rx_end_time = cc2420_read_sfd_timer();
 	off();
 	//XXX rx_end_time should not be 0
 	if(!rx_end_time) {

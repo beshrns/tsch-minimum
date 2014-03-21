@@ -664,6 +664,7 @@ powercycle(struct rtimer *t, void *ptr)
 	PT_BEGIN(&mpt);
 	static uint16_t timeslot = 0;
 	static int32_t drift = 0; //estimated drift to all time source neighbors
+	static uint16_t drift_counter = 0; //number of received drift corrections source neighbors
 
 	static cell_t * cell = NULL;
 	static struct TSCH_packet* p = NULL;
@@ -839,6 +840,7 @@ powercycle(struct rtimer *t, void *ptr)
 														}
 														//XXX should be the average of drifts to all time sources
 														drift += time_difference;
+														drift_counter++;
 
 													}
 													if (ack_status & NACK_FLAG) {
@@ -1032,13 +1034,24 @@ powercycle(struct rtimer *t, void *ptr)
 		duration = dt * TsSlotDuration;
 
 		//XXX correct on timeslot boundaries
+		static int32_t correction = 0;
 		if (!next_timeslot) {
-//			if (RTIMER_NOW() < start + duration + correction + 1) {
-				COOJA_DEBUG_STR("New slot frame: correction");
+			if(drift_counter) {
+				correction += (drift*100)/(3051*drift_counter);
+			}	else { //static drift due to timer resolution
+				correction += 5;
+				COOJA_DEBUG_STR("static drift correction!");
+
+			}
+			drift=0;
+			drift_counter=0;
+//			if (RTIMER_NOW() - start < duration + correction + 1) {
 				//calculating sync --convert from microseconds to RTIMER
-				int32_t time_difference_32 = (drift*100)/3051;
-				duration += time_difference_32;
-				drift=0;
+				duration += (int16_t)correction;
+				COOJA_DEBUG_PRINTF("New slot frame: correction %d", correction);
+
+				correction = 0;
+//			}
 		}
 //		COOJA_DEBUG_PRINTF("Schedule next ON slot now 0x%x, deadline 0x%x", RTIMER_NOW(),start);
 		timeslot = next_timeslot;
