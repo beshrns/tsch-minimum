@@ -87,9 +87,9 @@ send_packet(void *ptr)
   char buf[MAX_PAYLOAD_LEN];
 
   seq_id++;
-  PRINTF("DATA send to %d 'Hello %d'\n",
-         server_ipaddr.u8[sizeof(server_ipaddr.u8) - 1], seq_id);
-  sprintf(buf, "Hello %d from the client", seq_id);
+  PRINTF("DATA send to %d 'Hello %d from %d'\n",
+         server_ipaddr.u8[sizeof(server_ipaddr.u8) - 1], seq_id, rimeaddr_node_addr.u8[RIMEADDR_SIZE-1]);
+  sprintf(buf, "Hello %d from the client %d", seq_id, rimeaddr_node_addr.u8[RIMEADDR_SIZE-1]);
   uip_udp_packet_sendto(client_conn, buf, strlen(buf),
                         &server_ipaddr, UIP_HTONS(UDP_SERVER_PORT));
 }

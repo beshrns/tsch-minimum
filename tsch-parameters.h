@@ -36,10 +36,10 @@ typedef struct {
 
 #define PORT_maxTxAckPrepare (16)
 
-// ~327us
-#define PORT_delayTx (8)
+// ~327us+129preample
+#define PORT_delayTx (12)
 
-#define PORT_delayRx (4)
+#define PORT_delayRx (5)
 
 enum ieee154e_atomicdurations_enum {
 	// time-slot related
@@ -57,7 +57,7 @@ enum ieee154e_atomicdurations_enum {
 	maxRxDataPrepare = PORT_maxRxDataPrepare,
 	maxTxAckPrepare = PORT_maxTxAckPrepare,
 	// radio speed related
-	delayTx = PORT_delayTx,         // between GO signal and SFD
+	delayTx = PORT_delayTx,         // between GO signal and SFD: radio fixed delay + 4Bytes preample + 1B SFD -- 1Byte time is 32us
 	delayRx = PORT_delayRx,         // between GO signal and start listening
 	// radio watchdog
 	wdRadioTx = 33,                  //  1000us (needs to be >delayTx)
@@ -119,6 +119,7 @@ struct received_frame_s {
   uint8_t len;
   uint8_t acked;
   uint8_t seqno;
+  rimeaddr_t source_address;
 };
 int tsch_resume_powercycle(void);
 
