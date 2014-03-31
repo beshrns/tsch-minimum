@@ -49,11 +49,9 @@
 #include "lib/list.h"
 #include "lib/memb.h"
 #include "lib/random.h"
+#include "dev/cc2420.h"
 
 static volatile ieee154e_vars_t ieee154e_vars;
-
-#define ACK_LEN 3
-#define EXTRA_ACK_LEN 4
 
 #define DEBUG 0
 #if DEBUG
@@ -521,18 +519,8 @@ channel_check_interval(void)
 #ifndef MIN
 #define MIN(a, b) ((a) < (b)? (a) : (b))
 #endif /* MIN */
-int
-cc2420_set_channel(int c);
-#define NETSTACK_RADIO_set_channel cc2420_set_channel
 
-/* to get last packet timing information */
-extern volatile uint16_t cc2420_sfd_start_time;
-/*---------------------------------------------------------------------------*/
-static uint16_t
-get_sfd_start_time(void)
-{
-	return cc2420_sfd_start_time;
-}
+#define NETSTACK_RADIO_set_channel cc2420_set_channel
 /*---------------------------------------------------------------------------*/
 static uint8_t
 hop_channel(uint8_t offset)
@@ -577,13 +565,7 @@ static const cell_t * links_list[TOTAL_LINKS] = { &generic_eb_cell, &generic_sha
 
 static const slotframe_t minimum_slotframe = { 0, 101, 8, minimum_cells };
 
-//to initialize radio sfd counter and synchronize it with rtimer
-void
-cc2420_arch_sfd_sync(rtimer_clock_t start_time, uint8_t capture_start_sfd,
-		uint8_t capture_end_sfd);
 
-uint16_t
-cc2420_read_sfd_timer(void);
 
 #include "dev/leds.h"
 static slotframe_t const * current_slotframe;
@@ -618,9 +600,7 @@ schedule_fixed(struct rtimer *t, rtimer_clock_t ref_time,
 	rtimer_clock_t now = RTIMER_NOW() + 1;
 	ref_time += duration;
 	if (ref_time - now > duration) {
-//		COOJA_DEBUG_PRINTF("Missed deadline or timer overflow deadline %x < now %x\n", ref_time-now, duration);
 		COOJA_DEBUG_STR("schedule_fixed: missed deadline!\n");
-		// XXX! fix so missed deadline does not corrupt the whole schedule
 		ref_time = RTIMER_NOW() + 5;
 		ret = 0;
 	}
@@ -634,8 +614,6 @@ schedule_fixed(struct rtimer *t, rtimer_clock_t ref_time,
 	return ret;
 }
 /*---------------------------------------------------------------------------*/
-int
-cc2420_address_decode(uint8_t enable);
 static volatile uint8_t waiting_for_radio_interrupt = 0;
 extern volatile rtimer_clock_t rx_end_time;
 /*---------------------------------------------------------------------------*/
@@ -717,9 +695,6 @@ powercycle(struct rtimer *t, void *ptr)
 					uint16_t ack_sfd_time = 0;
 					rtimer_clock_t ack_sfd_rtime = 0;
 					is_broadcast = rimeaddr_cmp(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER), &rimeaddr_null);
-					if (!is_broadcast) {
-						COOJA_DEBUG_STR("unicast\n");
-					}
 					we_are_sending = 1;
 					char* payload_ptr = payload;
 					//read seqno from payload!
@@ -737,7 +712,7 @@ powercycle(struct rtimer *t, void *ptr)
 					uint8_t cca_status = 0;
 					BUSYWAIT_UNTIL_ABS(!(cca_status |= NETSTACK_RADIO.channel_clear()),
 							start, TsCCAOffset + TsCCA);
-					off(keep_radio_on);
+//					off(keep_radio_on);
 					if (cca_status == 0) {
 						success = RADIO_TX_COLLISION;
 					} else {
@@ -748,21 +723,14 @@ powercycle(struct rtimer *t, void *ptr)
 						//send
 						static rtimer_clock_t tx_time;
 						tx_time = RTIMER_NOW();
-						COOJA_DEBUG_STR("transmit\n");
 						success = NETSTACK_RADIO.transmit(payload_len);
-						COOJA_DEBUG_STR("transmit2\n");
-//						tx_time = MIN(RTIMER_NOW() - tx_time,
-//								cc2420_read_sfd_timer() - tx_time);
-//						tx_time = MIN(tx_time, wdDataDuration);
 						tx_time = cc2420_read_sfd_timer() - tx_time;
+//					tx_time = MIN(tx_time, wdDataDuration);
 						off(keep_radio_on);
 
 						if (success == RADIO_TX_OK) {
 							//uint8_t do_ack = (((uint8_t*)(p->ptr))[0] >> 5) & 1 == 1 ;
-							if (is_broadcast) {
-								//remove_packet_from_queue(cell->node_address);
-								COOJA_DEBUG_STR("is_broadcast - don't wait for ACK\n");
-							} else {
+							if (!is_broadcast) {
 								//wait for ack: after tx
 								COOJA_DEBUG_STR("wait for ACK\n");
 								schedule_fixed(t, start,
@@ -786,22 +754,7 @@ powercycle(struct rtimer *t, void *ptr)
 								}
 								if (cca_status) {
 									COOJA_DEBUG_STR("ACK detected\n");
-									//bullshit!
-//								ack_sfd_rtime = RTIMER_NOW() - start;
-//								ack_sfd_time = cc2420_read_sfd_timer() - start;
-//								if (!(ack_sfd_time >= TsTxOffset + tx_time + TsTxAckDelay - TsShortGT
-//										|| ack_sfd_time <= TsTxOffset + tx_time + TsTxAckDelay + TsShortGT)) {
-//									ack_sfd_time = ack_sfd_rtime;
-//								}
-									//Get timing jitter
-//									int16_t jitter = TsTxOffset + tx_time + TsTxAckDelay - ack_sfd_time;
-
 									uint8_t ackbuf[ACK_LEN + EXTRA_ACK_LEN];
-									if ( NETSTACK_RADIO.receiving_packet()) {
-										COOJA_DEBUG_STR("receiving_packet\n");
-									} else {
-
-									}
 									if (!NETSTACK_RADIO.pending_packet()) {
 										COOJA_DEBUG_STR("not pending_packet\n");
 										schedule_fixed(t, start,
@@ -809,16 +762,12 @@ powercycle(struct rtimer *t, void *ptr)
 														+ wdAckDuration);
 										PT_YIELD(&mpt);
 									}
-									int
-									cc2420_pending_irq(void);
 									if (NETSTACK_RADIO.pending_packet()) {
 										COOJA_DEBUG_STR("ACK Read:\n");
 										len = NETSTACK_RADIO.read(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
 									} else if (cc2420_pending_irq()) {
 										COOJA_DEBUG_STR("cc2420_pending_irq\n");
-										int
-										read_ack(void *buf, int);
-										len = read_ack(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
+										len = cc2420_read_ack(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
 									}
 									if (2 == ackbuf[0] && len >= ACK_LEN && seqno == ackbuf[2]) {
 										success = RADIO_TX_OK;
@@ -842,10 +791,9 @@ powercycle(struct rtimer *t, void *ptr)
 														COOJA_DEBUG_STR("ACK from time_source");
 
 														/* extract time correction */
-//														int16_t time_difference = ack_status & 0x0fff;
 														//is it a negative correction?
 														int16_t d=0;
-														if(ack_status & 0x0fff & 0x0800) {
+														if(ack_status & 0x0800) {
 															d = -(ack_status & 0x0fff & ~0x0800);
 														} else {
 															d = ack_status & 0x0fff;
@@ -853,8 +801,6 @@ powercycle(struct rtimer *t, void *ptr)
 														//XXX should be the average of drifts to all time sources
 														drift += d;
 														drift_counter++;
-//														COOJA_DEBUG_PRINTF("ACK status %x: d: %d, drift %d -- drift_counter %u -> avg_drift %d\n",
-//																ack_status, d, drift, drift_counter, (drift/drift_counter));
 													}
 													if (ack_status & NACK_FLAG) {
 														//TODO return NACK status to upper layer
@@ -869,9 +815,6 @@ powercycle(struct rtimer *t, void *ptr)
 									} else {
 										success = RADIO_TX_NOACK;
 										COOJA_DEBUG_STR("ACK not ok!\n");
-										COOJA_DEBUG_PRINTF("%u: %x, %x, %x ?= %x, %x, %x, %x, %x\n",
-												len, ackbuf[0], ackbuf[1], ackbuf[2], seqno, ackbuf[3],
-												ackbuf[4], ackbuf[5], ackbuf[6]);
 									}
 								} else {
 									COOJA_DEBUG_STR("No ack!\n");
@@ -1014,7 +957,7 @@ powercycle(struct rtimer *t, void *ptr)
 						uint16_t expected_rx = start + TsTxOffset;
 						uint16_t rx_duration = rx_end_time - (start + TsTxOffset);
 						off(keep_radio_on);
-						COOJA_DEBUG_PRINTF("RX rx_end %u - rx_start %u = %u", rx_end_time, expected_rx, rx_duration);
+//						COOJA_DEBUG_PRINTF("RX rx_end %u - rx_start %u = %u", rx_end_time, expected_rx, rx_duration);
 
 						//wait until ack time
 						extern volatile struct received_frame_s *last_rf;
@@ -1032,9 +975,7 @@ powercycle(struct rtimer *t, void *ptr)
 							schedule_fixed(t, rx_end_time, TsTxAckDelay - delayTx);
 							PT_YIELD(&mpt);
 							COOJA_DEBUG_STR("send_ack()");
-							void
-							send_ack(void);
-							send_ack();
+							cc2420_send_ack();
 							rx_end_time = 0;
 						}
 						/* If the originator was a time source neighbor, the receiver adjusts its own clock by incorporating the
@@ -1046,7 +987,7 @@ powercycle(struct rtimer *t, void *ptr)
 						if (last_drift) {
 							COOJA_DEBUG_PRINTF("drift seen %d\n", last_drift);
 
-							//XXX should check for source address instead! (maybe?) YES!
+							// check the source address for potential time-source match
 							n = neighbor_queue_from_addr(&last_rf->source_address);
 							if(n->time_source) {
 							//XXX should be the average of drifts to all time sources
@@ -1087,7 +1028,6 @@ powercycle(struct rtimer *t, void *ptr)
 		}
 		timeslot = next_timeslot;
 		ieee154e_vars.asn += dt;
-		schedule_fixed(t, start, duration);
 		start += duration;
 
 		//check for missed deadline
@@ -1098,8 +1038,13 @@ powercycle(struct rtimer *t, void *ptr)
 			dt =
 					next_timeslot ? next_timeslot - timeslot :
 							current_slotframe->length - timeslot;
-			duration = dt * TsSlotDuration;
-			start += duration;
+			uint16_t duration2 = dt * TsSlotDuration;
+			timeslot = next_timeslot;
+			ieee154e_vars.asn += dt;
+			schedule_fixed(t, start-duration, duration + duration2);
+			start += duration2;
+		} else {
+			schedule_fixed(t, start-duration, duration);
 		}
 
 		leds_off(LEDS_GREEN);
@@ -1109,7 +1054,7 @@ COOJA_DEBUG_STR("TSCH is OFF!!");
 PT_END(&mpt);
 }
 /*---------------------------------------------------------------------------*/
-char*
+void
 create_eb(char* buf, rimeaddr_t* dest)
 {
 	static uint8_t macEBSN = 0;
@@ -1131,6 +1076,7 @@ create_eb(char* buf, rimeaddr_t* dest)
 	buf[4] = 0x1e;
 	buf[5] = drift_loc&0xff;
 	buf[6] = (drift_loc>>8)&0xff;
+
 }
 
 /*---------------------------------------------------------------------------*/

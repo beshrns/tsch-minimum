@@ -37,9 +37,9 @@ typedef struct {
 #define PORT_maxTxAckPrepare (16)
 
 // ~327us+129preample
-#define PORT_delayTx (12)
-
-#define PORT_delayRx (5)
+#define PORT_delayTx (11)
+//~50us delay + 129preample + ??
+#define PORT_delayRx (9)
 
 enum ieee154e_atomicdurations_enum {
 	// time-slot related

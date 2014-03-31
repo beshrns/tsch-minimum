@@ -64,11 +64,6 @@ volatile int need_flush=0;
 #define WITH_SEND_CCA 0
 
 #define FOOTER_LEN 2
-//Timesync IE length with header = 4
-//#ifndef EXTRA_ACK_LEN
-#define EXTRA_ACK_LEN 4
-//#endif
-#define ACK_LEN (3)
 
 #define FIFOP_THRESHOLD (ACK_LEN+EXTRA_ACK_LEN)
 #undef CC2420_CONF_AUTOACK
@@ -117,8 +112,6 @@ volatile int need_flush=0;
 #define LEDS_ON(x)
 #define LEDS_OFF(x)
 #endif
-
-void cc2420_arch_init(void);
 
 /* XXX hack: these will be made as Chameleon packet attributes */
 rtimer_clock_t cc2420_time_of_arrival, cc2420_time_of_departure;
@@ -754,24 +747,17 @@ cc2420_arch_sfd_sync(rtimer_clock_t start_time, uint8_t capture_start_sfd, uint8
 
 	if(capture_start_sfd & capture_end_sfd) {
 	  TBCCTL1 = CM_3 | CAP | SCS;
-	  /* Enable interrupt? */
-	  TBCCTL1 |= CCIE;
 	} else if(capture_start_sfd) {
 	  TBCCTL1 = CM_1 | CAP | SCS;
-	  /* Enable interrupt? */
-	  TBCCTL1 |= CCIE;
 	} else if(capture_end_sfd){
 	  TBCCTL1 = CM_2 | CAP | SCS;
-	  /* Enable interrupt? */
-	  TBCCTL1 |= CCIE;
 	} else { //disabled
 	  TBCCTL1 = CM_0 | CAP | SCS;
-	  /* Disable interrupt? */
-	  TBCCTL1 &= ~CCIE;
 	}
-
+  /* Disable interrupt */
+  TBCCTL1 &= ~CCIE;
   /* Start Timer_B in continuous mode. */
-  TBCTL |= MC1;
+//  TBCTL |= MC1;
   cell_start_time = start_time;
   TBR = RTIMER_NOW();
 }
@@ -809,7 +795,7 @@ cc2420_interrupt(void)
   timetable_clear(&cc2420_timetable);
   TIMETABLE_TIMESTAMP(cc2420_timetable, "interrupt");
 #endif /* CC2420_TIMETABLE_PROFILING */
-
+  cc2420_sfd_start_time = cc2420_read_sfd_timer();
   last_packet_timestamp = cc2420_sfd_start_time;
   /* If the lock is taken, we cannot access the FIFO. */
   if(locked || need_flush || !CC2420_FIFO_IS_1) {
@@ -879,18 +865,18 @@ cc2420_interrupt(void)
 	if(!is_ack) {
 	  process_poll(&cc2420_process);
 		//calculating sync
-		time_difference_32 = cell_start_time + TsTxOffset - cc2420_sfd_start_time;
+		time_difference_32 = (int32_t)cell_start_time + TsTxOffset - last_packet_timestamp;
 		//correct for overflow to preserve sign
-		if(cell_start_time + TsTxOffset > 0xffff && time_difference_32 > 0x7fff) {
-			time_difference_32 = 0xffff - time_difference_32;
-		}
+//		if(cell_start_time + TsTxOffset < TsTxOffset && time_difference_32 < 0) {
+//			time_difference_32 = 0xffff - time_difference_32;
+//		}
 		last_drift = time_difference_32;
 		//do the math in 32bits to save precision
 		time_difference = time_difference_32 = (time_difference_32 * 3051)/100;
 		if(time_difference >=0) {
 			ack_status=time_difference & 0x07ff;
 		} else {
-			ack_status=((-time_difference) & 0x07ff) + 0x0800;
+			ack_status=((-time_difference) & 0x07ff) | 0x0800;
 		}
 		if(nack) {
 			ack_status |= 0x8000;
@@ -979,7 +965,7 @@ cc2420_interrupt(void)
 }
 /*---------------------------------------------------------------------------*/
 void
-send_ack(void) {
+cc2420_send_ack(void) {
 	COOJA_DEBUG_STR("Send ACK");
 	on();
 	strobe(CC2420_STXON); /* Send ACK */
@@ -988,7 +974,7 @@ send_ack(void) {
 }
 /*---------------------------------------------------------------------------*/
 int
-read_ack(void *buf, int alen) {
+cc2420_read_ack(void *buf, int alen) {
   GET_LOCK();
   BUSYWAIT_UNTIL(!CC2420_SFD_IS_1, RTIMER_SECOND / 100);
   int len, footer1;
