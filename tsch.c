@@ -159,13 +159,9 @@ struct neighbor_queue
 	uint8_t put_ptr, get_ptr, mask; // data-structures for circular buffer
 };
 
-// DECLARATION OF THE LIST OF NEIGHBORS
-//MEMB(neighbor_memb, struct neighbor_queue, MAX_NEIGHBOR);
-//LIST(neighbor_list);
 #include "net/nbr-table.h"
 NBR_TABLE(struct neighbor_queue, neighbor_list);
 
-// PROTOTYPES
 static struct TSCH_packet *
 get_next_packet_for_shared_tx(void);
 struct neighbor_queue *
@@ -182,6 +178,15 @@ struct TSCH_packet*
 read_packet_from_queue(const rimeaddr_t *addr);
 static void
 tsch_timer(void *ptr);
+
+/** This function takes the MSB of gcc generated random number
+ * because the LSB alone has very bad random characteristics,
+ * while the MSB appears more random.
+ * window is the upper limit of the number. It should be a power of two - 1
+ **/
+static uint8_t generate_random_byte(uint8_t window) {
+	return (random_rand() >> 8) & window;
+}
 
 // This function returns a pointer to the queue of neighbor whose address is equal to addr
 inline struct neighbor_queue *
@@ -847,9 +852,9 @@ powercycle(struct rtimer *t, void *ptr)
 							n->BE_value = macMinBE;
 							n->BW_value = 0;
 						}
-						if ((cell->link_options & LINK_OPTION_SHARED) & !is_broadcast) {
-							unsigned int window = 1 << n->BE_value;
-							n->BW_value = random_rand() % window;
+						if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
+							uint8_t window = 1 << n->BE_value;
+							n->BW_value = generate_random_byte(window - 1);
 							n->BE_value++;
 							if (n->BE_value > macMaxBE) {
 								n->BE_value = macMaxBE;
@@ -875,8 +880,8 @@ powercycle(struct rtimer *t, void *ptr)
 							n->BW_value = 0;
 						}
 						if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
-							unsigned int window = 1 << n->BE_value;
-							n->BW_value = random_rand() % window;
+							uint8_t window = 1 << n->BE_value;
+							n->BW_value = generate_random_byte(window - 1);
 							n->BE_value++;
 							if (n->BE_value > macMaxBE) {
 								n->BE_value = macMaxBE;
@@ -890,9 +895,9 @@ powercycle(struct rtimer *t, void *ptr)
 							n->BE_value = macMinBE;
 							n->BW_value = 0;
 						}
-						if ((cell->link_options & LINK_OPTION_SHARED) & !is_broadcast) {
-							unsigned int window = 1 << n->BE_value;
-							n->BW_value = random_rand() % window;
+						if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
+							uint8_t window = 1 << n->BE_value;
+							n->BW_value = generate_random_byte(window - 1);
 							n->BE_value++;
 							if (n->BE_value > macMaxBE) {
 								n->BE_value = macMaxBE;
