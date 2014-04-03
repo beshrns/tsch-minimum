@@ -627,9 +627,6 @@ static volatile int16_t last_drift;
 void
 tsch_resume_powercycle(uint8_t is_ack, uint8_t need_ack_irq, struct received_frame_s * last_rf_irq)
 {
-	if (!is_ack) {
-		last_drift = 0;
-	}
 	need_ack = need_ack_irq;
 	last_rf = last_rf_irq;
 	if (waiting_for_radio_interrupt || NETSTACK_RADIO_get_rx_end_time() != 0) {
