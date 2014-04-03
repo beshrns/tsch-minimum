@@ -12,6 +12,8 @@ typedef struct {
 	uint16_t captured_time;       // last captures time
 	uint16_t sync_timeout;        // how many slots left before looses sync
 	uint8_t is_sync;             // TRUE iff mote synchronized to network
+	uint8_t mac_ebsn;						//EB sequence number
+	uint8_t join_priority;			//inherit from RPL - for PAN coordinator: 0 -- lower is better
 //   OpenQueueEntry_t*  dataToSend;         // pointer to the data to send
 //   OpenQueueEntry_t*  dataReceived;       // pointer to the data received
 //   OpenQueueEntry_t*  ackToSend;          // pointer to the ack to send
@@ -113,14 +115,5 @@ typedef struct {
 	cell_t ** cells;
 } slotframe_t;
 #define TSCH_MAX_PACKET_LEN 127
-struct received_frame_s {
-  struct received_frame_s *next;
-  uint8_t buf[TSCH_MAX_PACKET_LEN];
-  uint8_t len;
-  uint8_t acked;
-  uint8_t seqno;
-  rimeaddr_t source_address;
-};
-int tsch_resume_powercycle(void);
 
 #endif /* __TSCH_PARAMETERS_H__ */

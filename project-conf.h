@@ -22,4 +22,11 @@
 #undef NETSTACK_CONF_RDC
 #define NETSTACK_CONF_RDC     tschrdc_driver
 
+#undef UIP_CONF_ND6_SEND_NA
+#define UIP_CONF_ND6_SEND_NA 0
+
+#undef UIP_CONF_ND6_SEND_RA
+#define UIP_CONF_ND6_SEND_RA 0
+
 #endif /* PROJECT_H_ */
+

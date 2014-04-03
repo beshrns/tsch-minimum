@@ -1,7 +1,7 @@
 TARGET ?= sky
 #APPS=servreg-hack
 CONTIKIDIRS += ./dev
-CONTIKI_SOURCEFILES += tsch.c cc2420.c
+CONTIKI_SOURCEFILES += tsch.c cc2420-tsch.c
 CONTIKI_PROJECT = udp-client udp-server
 WITH_UIP6=1
 UIP_CONF_IPV6=1
