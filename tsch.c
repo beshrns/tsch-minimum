@@ -353,7 +353,6 @@ send_one_packet(mac_callback_t sent, void *ptr)
 	if (!rimeaddr_cmp(addr, &rimeaddr_null)) {
 		packetbuf_set_attr(PACKETBUF_ATTR_MAC_ACK, 1);
 	}
-	COOJA_DEBUG_ADDR(addr);
 	/* PACKETBUF_ATTR_MAC_SEQNO cannot be zero, due to a pecuilarity
 	 in framer-802154.c. */
 	seqno = (++ieee154e_vars.dsn) ? ieee154e_vars.dsn : ++ieee154e_vars.dsn;
@@ -525,7 +524,6 @@ channel_check_interval(void)
 #define MIN(a, b) ((a) < (b)? (a) : (b))
 #endif /* MIN */
 
-#define NETSTACK_RADIO_set_channel cc2420_set_channel
 /*---------------------------------------------------------------------------*/
 static uint8_t
 hop_channel(uint8_t offset)
@@ -626,7 +624,7 @@ static volatile uint8_t need_ack;
 static volatile struct received_frame_s *last_rf;
 static volatile int16_t last_drift;
 /*---------------------------------------------------------------------------*/
-int
+void
 tsch_resume_powercycle(uint8_t is_ack, uint8_t need_ack_irq, struct received_frame_s * last_rf_irq)
 {
 	if (!is_ack) {
@@ -634,13 +632,11 @@ tsch_resume_powercycle(uint8_t is_ack, uint8_t need_ack_irq, struct received_fra
 	}
 	need_ack = need_ack_irq;
 	last_rf = last_rf_irq;
-	if (waiting_for_radio_interrupt || cc2420_get_rx_end_time() != 0) {
+	if (waiting_for_radio_interrupt || NETSTACK_RADIO_get_rx_end_time() != 0) {
 		waiting_for_radio_interrupt = 0;
 		schedule_fixed(&t, RTIMER_NOW(), 5);
 	}
 	leds_off(LEDS_RED);
-
-	return 1;
 }
 /*---------------------------------------------------------------------------*/
 static int
@@ -655,28 +651,31 @@ powercycle(struct rtimer *t, void *ptr)
 	static volatile int32_t drift_correction = 0;
 	static volatile int32_t drift = 0; //estimated drift to all time source neighbors
 	static volatile uint16_t drift_counter = 0; //number of received drift corrections source neighbors
-
+	static uint8_t cell_decison = 0;
 	static cell_t * cell = NULL;
 	static struct TSCH_packet* p = NULL;
 	static struct neighbor_queue *n = NULL;
 	start = RTIMER_NOW();
 	//while MAC-RDC is not disabled, and while its synchronized
 	while (ieee154e_vars.is_sync && ieee154e_vars.state != TSCH_OFF) {
-		last_rf = NULL;
-
 		COOJA_DEBUG_STR("Cell start\n");
 		/* sync with cycle start and enable capturing start & end sfd*/
-		cc2420_arch_sfd_sync(start, 1, 1);
+		NETSTACK_RADIO_sfd_sync(1, 1);
 		leds_on(LEDS_GREEN);
 		cell = get_cell(timeslot);
 		if (cell == NULL || working_on_queue) {
-			COOJA_DEBUG_STR("Off cell\n");
+			COOJA_DEBUG_STR("Off CELL\n");
 			//off cell
 			off(keep_radio_on);
+			cell_decison = CELL_OFF;
 		} else {
 			hop_channel(cell->channel_offset);
 			p = NULL;
 			n = NULL;
+			last_drift=0;
+			last_rf = NULL;
+			need_ack = 0;
+			waiting_for_radio_interrupt = 0;
 			//is there a packet to send? if not check if this slot is RX too
 			if (cell->link_options & LINK_OPTION_TX) {
 				//is it for ADV/EB?
@@ -687,242 +686,258 @@ powercycle(struct rtimer *t, void *ptr)
 					n = neighbor_queue_from_addr(cell->node_address);
 					if (n != NULL) {
 						p = read_packet_from_neighbor_queue(n);
-					}
-					//if there it is a shared broadcast slot and there were no broadcast packets, pick any unicast packet
-					if(p==NULL && rimeaddr_cmp(cell->node_address, &BROADCAST_CELL_ADDRESS) && (cell->link_options & LINK_OPTION_SHARED)) {
-						p = get_next_packet_for_shared_slot_tx();
+						//if there it is a shared broadcast slot and there were no broadcast packets, pick any unicast packet
+						if(p==NULL && rimeaddr_cmp(cell->node_address, &BROADCAST_CELL_ADDRESS) && (cell->link_options & LINK_OPTION_SHARED)) {
+							p = get_next_packet_for_shared_slot_tx();
+						}
 					}
 				}
 			}
 
-			//Is it a TX slot and Is there a packet to send?
-			if ((cell->link_options & LINK_OPTION_TX) && p != NULL) {
-				COOJA_DEBUG_STR("TO TRANSMIT\n");
-				//timeslot_tx(t, start, msg, MSG_LEN);
-				// if dedicated slot or shared slot and BW_value=0, we transmit the packet
-				if (!(cell->link_options & LINK_OPTION_SHARED)
-						|| ((cell->link_options & LINK_OPTION_SHARED) && n->BW_value == 0)) {
-					static void * payload = NULL;
-					static unsigned short payload_len = 0;
-					payload = queuebuf_dataptr(p->pkt);
-					payload_len = queuebuf_datalen(p->pkt);
-					//TODO There are small timing variations visible in cooja, which needs tuning
-					static uint8_t is_broadcast = 0, len, seqno, ret;
-					uint16_t ack_sfd_time = 0;
-					rtimer_clock_t ack_sfd_rtime = 0;
-					is_broadcast = rimeaddr_cmp(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER), &rimeaddr_null);
-					we_are_sending = 1;
-					char* payload_ptr = payload;
-					//read seqno from payload!
-					seqno = payload_ptr[2];
-					//prepare packet to send
-					uint8_t success = !NETSTACK_RADIO.prepare(payload, payload_len);
-					uint8_t cca_status = 1;
-#if CCA_ENABLED
-					//delay before CCA
-					schedule_fixed(t, start, TsCCAOffset);
-					PT_YIELD(&mpt);
-					on();
-					//CCA
-					BUSYWAIT_UNTIL_ABS(!(cca_status |= NETSTACK_RADIO.channel_clear()),
-							start, TsCCAOffset + TsCCA);
-					//there is not enough time to turn radio off
-					off(keep_radio_on);
-#endif /* CCA_ENABLED */
-					if (cca_status == 0) {
-						success = RADIO_TX_COLLISION;
-					} else {
-						//delay before TX
-						cc2420_arch_sfd_sync(start, 0, 1);
-						schedule_fixed(t, start, TsTxOffset - delayTx);
-						PT_YIELD(&mpt);
-						//to record the duration of packet tx
-						static rtimer_clock_t tx_time;
-						tx_time = RTIMER_NOW();
-						//send packet already in radio tx buffer
-						success = NETSTACK_RADIO.transmit(payload_len);
-						tx_time = cc2420_read_sfd_timer() - tx_time;
-						//limit tx_time in case of something wrong
-						tx_time = MIN(tx_time, wdDataDuration);
-						off(keep_radio_on);
+			if(cell->link_options & LINK_OPTION_TX) {
+				if(p != NULL) {
+					// if dedicated slot or shared slot and BW_value=0, we transmit the packet
+					if(!(cell->link_options & LINK_OPTION_SHARED)
+						|| n->BW_value == 0) {
+						cell_decison = CELL_TX;
+					} else if(n->BW_value != 0) {
+						// packet to transmit but we cannot use shared slot due to backoff counter
+						n->BW_value--;
+						cell_decison = CELL_TX_BACKOFF;
+					}
+				} else {
+					cell_decison = CELL_TX_IDLE;
+				}
+			}
 
-						if (success == RADIO_TX_OK) {
-							if (!is_broadcast) {
-								//wait for ack: after tx
-								COOJA_DEBUG_STR("wait for ACK\n");
+			if( (cell->link_options & LINK_OPTION_RX) && cell_decison != CELL_TX) {
+				cell_decison = CELL_RX;
+			}
+
+			if(cell_decison != CELL_TX && cell_decison != CELL_RX) {
+				COOJA_DEBUG_STR("Nothing to TX or RX --> off CELL\n");
+				off(keep_radio_on);
+			} else if (cell_decison == CELL_TX) {
+				COOJA_DEBUG_STR("CELL_TX");
+				//timeslot_tx(t, start, packet, packet_len);
+				static void * payload = NULL;
+				static unsigned short payload_len = 0;
+				payload = queuebuf_dataptr(p->pkt);
+				payload_len = queuebuf_datalen(p->pkt);
+				//TODO There are small timing variations visible in cooja, which needs tuning
+				static uint8_t is_broadcast = 0, len, seqno, ret;
+				uint16_t ack_sfd_time = 0;
+				rtimer_clock_t ack_sfd_rtime = 0;
+				is_broadcast = rimeaddr_cmp(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER), &rimeaddr_null);
+				we_are_sending = 1;
+				char* payload_ptr = payload;
+				//read seqno from payload!
+				seqno = payload_ptr[2];
+				//prepare packet to send
+				uint8_t success = !NETSTACK_RADIO.prepare(payload, payload_len);
+				uint8_t cca_status = 1;
+#if CCA_ENABLED
+				//delay before CCA
+				schedule_fixed(t, start, TsCCAOffset);
+				PT_YIELD(&mpt);
+				on();
+				//CCA
+				BUSYWAIT_UNTIL_ABS(!(cca_status |= NETSTACK_RADIO.channel_clear()),
+						start, TsCCAOffset + TsCCA);
+				//there is not enough time to turn radio off
+				off(keep_radio_on);
+#endif /* CCA_ENABLED */
+				if (cca_status == 0) {
+					success = RADIO_TX_COLLISION;
+				} else {
+					//delay before TX
+					NETSTACK_RADIO_sfd_sync(0, 1);
+					schedule_fixed(t, start, TsTxOffset - delayTx);
+					PT_YIELD(&mpt);
+					//to record the duration of packet tx
+					static rtimer_clock_t tx_time;
+					tx_time = RTIMER_NOW();
+					//send packet already in radio tx buffer
+					success = NETSTACK_RADIO.transmit(payload_len);
+					tx_time = NETSTACK_RADIO_read_sfd_timer() - tx_time;
+					//limit tx_time in case of something wrong
+					tx_time = MIN(tx_time, wdDataDuration);
+					off(keep_radio_on);
+
+					if (success == RADIO_TX_OK) {
+						if (!is_broadcast) {
+							//wait for ack: after tx
+							COOJA_DEBUG_STR("wait for ACK\n");
+							schedule_fixed(t, start,
+									TsTxOffset + tx_time + TsTxAckDelay - TsShortGT - delayRx);
+							/* disable capturing sfd */
+							NETSTACK_RADIO_sfd_sync(0, 0);
+							PT_YIELD(&mpt);
+							COOJA_DEBUG_STR("wait for detecting ACK\n");
+							waiting_for_radio_interrupt = 1;
+							on();
+							cca_status = NETSTACK_RADIO.receiving_packet()
+									|| NETSTACK_RADIO.pending_packet()
+									|| !NETSTACK_RADIO.channel_clear();
+							if (!cca_status) {
 								schedule_fixed(t, start,
-										TsTxOffset + tx_time + TsTxAckDelay - TsShortGT - delayRx);
-								/* disable capturing sfd */
-								cc2420_arch_sfd_sync(start, 0, 0);
+										TsTxOffset + tx_time + TsTxAckDelay + TsShortGT);
 								PT_YIELD(&mpt);
-								COOJA_DEBUG_STR("wait for detecting ACK\n");
-								waiting_for_radio_interrupt = 1;
-								on();
-								cca_status = NETSTACK_RADIO.receiving_packet()
+								cca_status |= NETSTACK_RADIO.receiving_packet()
 										|| NETSTACK_RADIO.pending_packet()
 										|| !NETSTACK_RADIO.channel_clear();
-								if (!cca_status) {
+							}
+							if (cca_status) {
+								COOJA_DEBUG_STR("ACK detected\n");
+								uint8_t ackbuf[ACK_LEN + EXTRA_ACK_LEN];
+								if (!NETSTACK_RADIO.pending_packet()) {
+									COOJA_DEBUG_STR("not pending_packet\n");
 									schedule_fixed(t, start,
-											TsTxOffset + tx_time + TsTxAckDelay + TsShortGT);
+											TsTxOffset + tx_time + TsTxAckDelay + TsShortGT
+													+ wdAckDuration);
 									PT_YIELD(&mpt);
-									cca_status |= NETSTACK_RADIO.receiving_packet()
-											|| NETSTACK_RADIO.pending_packet()
-											|| !NETSTACK_RADIO.channel_clear();
 								}
-								if (cca_status) {
-									COOJA_DEBUG_STR("ACK detected\n");
-									uint8_t ackbuf[ACK_LEN + EXTRA_ACK_LEN];
-									if (!NETSTACK_RADIO.pending_packet()) {
-										COOJA_DEBUG_STR("not pending_packet\n");
-										schedule_fixed(t, start,
-												TsTxOffset + tx_time + TsTxAckDelay + TsShortGT
-														+ wdAckDuration);
-										PT_YIELD(&mpt);
-									}
-									//is there an ACK pending?
-									if (NETSTACK_RADIO.pending_packet()) {
-										COOJA_DEBUG_STR("ACK Read:\n");
-										len = NETSTACK_RADIO.read(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
-									} else if (cc2420_pending_irq()) {
-										//we have received something in radio FIFO but radio interrupt has not fired because we are inside rtimer code
-										len = cc2420_read_ack(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
-									}
-									if (2 == ackbuf[0] && len >= ACK_LEN && seqno == ackbuf[2]) {
-										success = RADIO_TX_OK;
-										uint16_t ack_status = 0;
-										if (ackbuf[1] & 2) { //IE-list present?
-											COOJA_DEBUG_STR("ACK IE-list present");
+								//is there an ACK pending?
+								if (NETSTACK_RADIO.pending_packet()) {
+									COOJA_DEBUG_STR("ACK Read:\n");
+									len = NETSTACK_RADIO.read(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
+								} else if (NETSTACK_RADIO_pending_irq()) {
+									//we have received something in radio FIFO but radio interrupt has not fired because we are inside rtimer code
+									len = NETSTACK_RADIO_read_ack(ackbuf, ACK_LEN + EXTRA_ACK_LEN);
+								}
+								if (2 == ackbuf[0] && len >= ACK_LEN && seqno == ackbuf[2]) {
+									success = RADIO_TX_OK;
+									uint16_t ack_status = 0;
+									if (ackbuf[1] & 2) { //IE-list present?
+										COOJA_DEBUG_STR("ACK IE-list present");
 
-											if (len == ACK_LEN + EXTRA_ACK_LEN) {
-												COOJA_DEBUG_STR("ACK_LEN + EXTRA_ACK_LEN");
+										if (len == ACK_LEN + EXTRA_ACK_LEN) {
+											COOJA_DEBUG_STR("ACK_LEN + EXTRA_ACK_LEN");
 
-												if (ackbuf[3] == 0x02 && ackbuf[4] == 0x1e) {
-													COOJA_DEBUG_STR("ACK sync header");
+											if (ackbuf[3] == 0x02 && ackbuf[4] == 0x1e) {
+												COOJA_DEBUG_STR("ACK sync header");
 
-													ack_status = ackbuf[5];
-													ack_status |= ackbuf[6] << 8;
-													/* If the originator was a time source neighbor, the receiver adjusts its own clock by incorporating the
-													 * 	difference into an average of the drift to all its time source neighbors. The averaging method is
-													 * 	implementation dependent. If the receiver is not a clock source, the time correction is ignored.
-													 */
-													if (n->time_source) {
-														COOJA_DEBUG_STR("ACK from time_source");
+												ack_status = ackbuf[5];
+												ack_status |= ackbuf[6] << 8;
+												/* If the originator was a time source neighbor, the receiver adjusts its own clock by incorporating the
+												 * 	difference into an average of the drift to all its time source neighbors. The averaging method is
+												 * 	implementation dependent. If the receiver is not a clock source, the time correction is ignored.
+												 */
+												if (n->time_source) {
+													COOJA_DEBUG_STR("ACK from time_source");
 
-														/* extract time correction */
-														int16_t d=0;
-														//is it a negative correction?
-														if(ack_status & 0x0800) {
-															d = -(ack_status & 0x0fff & ~0x0800);
-														} else {
-															d = ack_status & 0x0fff;
-														}
-														drift += d;
-														drift_counter++;
+													/* extract time correction */
+													int16_t d=0;
+													//is it a negative correction?
+													if(ack_status & 0x0800) {
+														d = -(ack_status & 0x0fff & ~0x0800);
+													} else {
+														d = ack_status & 0x0fff;
 													}
-													if (ack_status & NACK_FLAG) {
-														//TODO return NACK status to upper layer
-														COOJA_DEBUG_STR("ACK NACK_FLAG\n");
-													}
+													drift += d;
+													drift_counter++;
 												}
-
+												if (ack_status & NACK_FLAG) {
+													//TODO return NACK status to upper layer
+													COOJA_DEBUG_STR("ACK NACK_FLAG\n");
+												}
 											}
+
 										}
-										COOJA_DEBUG_STR("ACK ok\n");
-									} else {
-										success = RADIO_TX_NOACK;
-										COOJA_DEBUG_STR("ACK not ok!\n");
 									}
+									COOJA_DEBUG_STR("ACK ok\n");
 								} else {
-									COOJA_DEBUG_STR("No ack!\n");
 									success = RADIO_TX_NOACK;
-
+									COOJA_DEBUG_STR("ACK not ok!\n");
 								}
-								waiting_for_radio_interrupt = 0;
-							}
-							we_are_sending = 0;
-							off(keep_radio_on);
-							COOJA_DEBUG_STR("end tx slot\n");
-						}
-					}
+							} else {
+								COOJA_DEBUG_STR("No ack!\n");
+								success = RADIO_TX_NOACK;
 
-					if (success == RADIO_TX_NOACK) {
-						p->transmissions++;
-						if (p->transmissions == macMaxFrameRetries) {
-							remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
-							n->BE_value = macMinBE;
-							n->BW_value = 0;
-						}
-						if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
-							uint8_t window = 1 << n->BE_value;
-							n->BW_value = generate_random_byte(window - 1);
-							n->BE_value++;
-							if (n->BE_value > macMaxBE) {
-								n->BE_value = macMaxBE;
 							}
+							waiting_for_radio_interrupt = 0;
 						}
-						ret = MAC_TX_NOACK;
-					} else if (success == RADIO_TX_OK) {
-						remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
-						if (!read_packet_from_queue(cell->node_address)) {
-							// if no more packets in the queue
-							n->BW_value = 0;
-							n->BE_value = macMinBE;
-						} else {
-							// if queue is not empty
-							n->BW_value = 0;
-						}
-						ret = MAC_TX_OK;
-					} else if (success == RADIO_TX_COLLISION) {
-						p->transmissions++;
-						if (p->transmissions == macMaxFrameRetries) {
-							remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
-							n->BE_value = macMinBE;
-							n->BW_value = 0;
-						}
-						if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
-							uint8_t window = 1 << n->BE_value;
-							n->BW_value = generate_random_byte(window - 1);
-							n->BE_value++;
-							if (n->BE_value > macMaxBE) {
-								n->BE_value = macMaxBE;
-							}
-						}
-						ret = MAC_TX_COLLISION;
-					} else if (success == RADIO_TX_ERR) {
-						p->transmissions++;
-						if (p->transmissions == macMaxFrameRetries) {
-							remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
-							n->BE_value = macMinBE;
-							n->BW_value = 0;
-						}
-						if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
-							uint8_t window = 1 << n->BE_value;
-							n->BW_value = generate_random_byte(window - 1);
-							n->BE_value++;
-							if (n->BE_value > macMaxBE) {
-								n->BE_value = macMaxBE;
-							}
-						}
-						ret = MAC_TX_ERR;
-					} else {
-						// successful transmission
-						remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
-						if (!read_packet_from_queue(cell->node_address)) {
-							// if no more packets in the queue
-							n->BW_value = 0;
-							n->BE_value = macMinBE;
-						} else {
-							// if queue is not empty
-							n->BW_value = 0;
-						}
-						ret = MAC_TX_OK;
+						we_are_sending = 0;
+						off(keep_radio_on);
+						COOJA_DEBUG_STR("end tx slot\n");
 					}
-					p->ret=ret;
-					process_post(&tsch_tx_callback_process, PROCESS_EVENT_POLL, p);
-				} else { // packet to transmit but we cannot use shared slot due to backoff counter
-					n->BW_value--;
 				}
-			} else if (cell->link_options & LINK_OPTION_RX) {
+
+				if (success == RADIO_TX_NOACK) {
+					p->transmissions++;
+					if (p->transmissions == macMaxFrameRetries) {
+						remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
+						n->BE_value = macMinBE;
+						n->BW_value = 0;
+					}
+					if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
+						uint8_t window = 1 << n->BE_value;
+						n->BW_value = generate_random_byte(window - 1);
+						n->BE_value++;
+						if (n->BE_value > macMaxBE) {
+							n->BE_value = macMaxBE;
+						}
+					}
+					ret = MAC_TX_NOACK;
+				} else if (success == RADIO_TX_OK) {
+					remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
+					if (!read_packet_from_queue(cell->node_address)) {
+						// if no more packets in the queue
+						n->BW_value = 0;
+						n->BE_value = macMinBE;
+					} else {
+						// if queue is not empty
+						n->BW_value = 0;
+					}
+					ret = MAC_TX_OK;
+				} else if (success == RADIO_TX_COLLISION) {
+					p->transmissions++;
+					if (p->transmissions == macMaxFrameRetries) {
+						remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
+						n->BE_value = macMinBE;
+						n->BW_value = 0;
+					}
+					if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
+						uint8_t window = 1 << n->BE_value;
+						n->BW_value = generate_random_byte(window - 1);
+						n->BE_value++;
+						if (n->BE_value > macMaxBE) {
+							n->BE_value = macMaxBE;
+						}
+					}
+					ret = MAC_TX_COLLISION;
+				} else if (success == RADIO_TX_ERR) {
+					p->transmissions++;
+					if (p->transmissions == macMaxFrameRetries) {
+						remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
+						n->BE_value = macMinBE;
+						n->BW_value = 0;
+					}
+					if ((cell->link_options & LINK_OPTION_SHARED) && !is_broadcast) {
+						uint8_t window = 1 << n->BE_value;
+						n->BW_value = generate_random_byte(window - 1);
+						n->BE_value++;
+						if (n->BE_value > macMaxBE) {
+							n->BE_value = macMaxBE;
+						}
+					}
+					ret = MAC_TX_ERR;
+				} else {
+					// successful transmission
+					remove_packet_from_queue(queuebuf_addr(p->pkt, PACKETBUF_ADDR_RECEIVER));
+					if (!read_packet_from_queue(cell->node_address)) {
+						// if no more packets in the queue
+						n->BW_value = 0;
+						n->BE_value = macMinBE;
+					} else {
+						// if queue is not empty
+						n->BW_value = 0;
+					}
+					ret = MAC_TX_OK;
+				}
+				p->ret=ret;
+				process_post(&tsch_tx_callback_process, PROCESS_EVENT_POLL, p);
+			} else if (cell_decison == CELL_RX) {
 //				timeslot_rx(t, start, msg, MSG_LEN);
 				if (cell->link_options & LINK_OPTION_TIME_KEEPING) {
 					// TODO
@@ -951,7 +966,7 @@ powercycle(struct rtimer *t, void *ptr)
 					PT_YIELD(&mpt);
 					COOJA_DEBUG_STR("RX on +TsLongGT");
 
-					if (!(cc2420_get_rx_end_time() || cca_status || NETSTACK_RADIO.pending_packet()
+					if (!(NETSTACK_RADIO_get_rx_end_time() || cca_status || NETSTACK_RADIO.pending_packet()
 							|| !NETSTACK_RADIO.channel_clear()
 							|| NETSTACK_RADIO.receiving_packet())) {
 						COOJA_DEBUG_STR("RX no packet in air\n");
@@ -959,33 +974,24 @@ powercycle(struct rtimer *t, void *ptr)
 						//no packets on air
 						ret = 0;
 					} else {
-						if (cc2420_get_rx_end_time() == 0 && (!NETSTACK_RADIO.pending_packet())) {
-							//wait until rx finishes
-							schedule_fixed(t, start, TsTxOffset + wdDataDuration + 1);
-							waiting_for_radio_interrupt = 1;
-							COOJA_DEBUG_STR("Wait until RX is done");
-							PT_YIELD(&mpt);
-						}
+//						if (NETSTACK_RADIO_get_rx_end_time() == 0 && (!NETSTACK_RADIO.pending_packet())) {
+//							//wait until rx finishes
+//							schedule_fixed(t, start, TsTxOffset + wdDataDuration);
+//							waiting_for_radio_interrupt = 1;
+//							COOJA_DEBUG_STR("Wait until RX is done");
+//							PT_YIELD(&mpt);
+//						}
 
 						uint16_t expected_rx = start + TsTxOffset;
-						uint16_t rx_duration = cc2420_get_rx_end_time() - (start + TsTxOffset);
+						uint16_t rx_duration = NETSTACK_RADIO_get_rx_end_time() - (start + TsTxOffset);
 						off(keep_radio_on);
 
-						//wait until ack time
-						if (last_rf) { //received something and not out of memory
-							COOJA_DEBUG_STR("last_rf != NULL");
-						} else {
-							COOJA_DEBUG_STR("last_rf = NULL");
-						}
-						if (is_broadcast) {
-							COOJA_DEBUG_STR("RX is_broadcast cell");
-						}
+						/* wait until ack time */
 						if (need_ack) {
-							COOJA_DEBUG_STR("last_rf->acked");
-							schedule_fixed(t, cc2420_get_rx_end_time(), TsTxAckDelay - delayTx);
+							schedule_fixed(t, NETSTACK_RADIO_get_rx_end_time(), TsTxAckDelay - delayTx);
 							PT_YIELD(&mpt);
 							COOJA_DEBUG_STR("send_ack()");
-							cc2420_send_ack();
+							NETSTACK_RADIO_send_ack();
 						}
 						/* If the originator was a time source neighbor, the receiver adjusts its own clock by incorporating the
 						 * 	difference into an average of the drift to all its time source neighbors. The averaging method is
@@ -994,18 +1000,15 @@ powercycle(struct rtimer *t, void *ptr)
 						//drift calculated in radio_interrupt
 						if (last_drift) {
 							COOJA_DEBUG_PRINTF("drift seen %d\n", last_drift);
-
 							// check the source address for potential time-source match
 							n = neighbor_queue_from_addr(&last_rf->source_address);
 							if(n->time_source) {
-							//XXX should be the average of drifts to all time sources
+								// should be the average of drifts to all time sources
 								drift_correction -= last_drift;
 								++drift_counter;
 								COOJA_DEBUG_STR("drift recorded");
 							}
-							last_drift=0;
 						}
-						last_rf = NULL;
 						//XXX return length instead? or status? or something?
 						ret = 1;
 					}
@@ -1019,6 +1022,7 @@ powercycle(struct rtimer *t, void *ptr)
 						current_slotframe->length - timeslot;
 		duration = dt * TsSlotDuration;
 
+		/* apply sync correction on the start of the new slotframe */
 		if (!next_timeslot) {
 			if(drift_counter) {
 				//convert from micro seconds to rtimer ticks and take average
@@ -1063,24 +1067,40 @@ PT_END(&mpt);
 }
 /*---------------------------------------------------------------------------*/
 /* This function adds the Sync IE from the beginning of the buffer and returns the number of bytes */
-static int
-add_sync_IE(char* buf, int16_t drift_loc) {
+static uint8_t
+add_sync_IE(uint8_t* buf, int32_t time_difference_32, uint8_t nack) {
+	int16_t time_difference;
+	uint16_t ack_status = 0;
+	uint8_t len=4;
+	//do the math in 32bits to save precision
+	time_difference = time_difference_32 = (time_difference_32 * 3051)/100;
+	if(time_difference >=0) {
+		ack_status=time_difference & 0x07ff;
+	} else {
+		ack_status=((-time_difference) & 0x07ff) | 0x0800;
+	}
+	if(nack) {
+		ack_status |= 0x8000;
+	}
 	buf[0] = 0x02;
 	buf[1] = 0x1e;
-	buf[2] = drift_loc&0xff;
-	buf[3] = (drift_loc>>8)&0xff;
-	return 4;
+	buf[2] = ack_status & 0xff;
+	buf[3] = (ack_status >> 8) & 0xff;
+	return len;
 }
 /*---------------------------------------------------------------------------*/
 // Create an EB packet and puts it in the EB queue
 static int
 send_eb(rimeaddr_t *addr, int16_t reported_drift, slotframe_t* slotframe, cell_t * links_list, uint8_t links_list_size)
 {
+	uint8_t* buf;
+	uint16_t seqno;
+	uint8_t nack = 0;
+
 	//send_one_packet(sent, ptr);
 	COOJA_DEBUG_STR("TSCH send_one_packet\n");
 	packetbuf_clear();
-	char* buf = (char*)packetbuf_dataptr();
-	uint16_t seqno;
+	buf = (uint8_t*)packetbuf_dataptr();
 	//default is broadcast
 	//could be unicast if sent as a reply to a specific EB request
 	packetbuf_set_addr(PACKETBUF_ADDR_RECEIVER, &rimeaddr_null);
@@ -1089,10 +1109,8 @@ send_eb(rimeaddr_t *addr, int16_t reported_drift, slotframe_t* slotframe, cell_t
 	if (!rimeaddr_cmp(addr, &rimeaddr_null)) {
 		packetbuf_set_attr(PACKETBUF_ATTR_MAC_ACK, 1);
 	}
-//	COOJA_DEBUG_ADDR(addr);
 	/* PACKETBUF_ATTR_MAC_SEQNO cannot be zero, due to a pecuilarity
 	 in framer-802154.c. */
-	static uint8_t macEBSN = 0;
 	seqno = (++ieee154e_vars.mac_ebsn) ? ieee154e_vars.mac_ebsn : ++ieee154e_vars.mac_ebsn;
 	packetbuf_set_attr(PACKETBUF_ATTR_MAC_SEQNO, seqno);
 	if (NETSTACK_FRAMER.create() < 0) {
@@ -1101,15 +1119,14 @@ send_eb(rimeaddr_t *addr, int16_t reported_drift, slotframe_t* slotframe, cell_t
 	//fcf
 	buf[0] = 0x02;
 	buf[1] = 0x22; //b9:IE-list-present=1 - b12-b13:frame version=2
+	buf[2] = ieee154e_vars.mac_ebsn;
 	/* Append IE timesync */
-
 	//Put IEs: sync, slotframe and link, timeslot and channel hopping sequence
 	if (reported_drift != 0) {
-		add_sync_IE(buf+3, reported_drift);
+		add_sync_IE(buf+3, reported_drift, nack);
 	}
 
 	if (slotframe != NULL) {
-
 		if (links_list_size && links_list != NULL) {
 
 		}
@@ -1155,33 +1172,21 @@ tsch_associate(void)
 	start = RTIMER_NOW();
 	schedule_fixed(&t, start, TsSlotDuration);
 }
-void tsch_make_sync_ack(unsigned char *ackbuf, rtimer_clock_t last_packet_timestamp, uint8_t nack) {
+/*---------------------------------------------------------------------------*/
+volatile uint8_t ackbuf[1+ACK_LEN + EXTRA_ACK_LEN]={0};
+void tsch_make_sync_ack(uint8_t **buf, uint8_t seqno, rtimer_clock_t last_packet_timestamp, uint8_t nack) {
 	int32_t time_difference_32;
-	int16_t time_difference;
-	uint16_t ack_status = 0;
+	COOJA_DEBUG_STR("tsch_make_sync_ack");
+	*buf=ackbuf;
 	//calculating sync
 	time_difference_32 = (int32_t)start + TsTxOffset - last_packet_timestamp;
 	last_drift = time_difference_32;
-	//do the math in 32bits to save precision
-	time_difference = time_difference_32 = (time_difference_32 * 3051)/100;
-	if(time_difference >=0) {
-		ack_status=time_difference & 0x07ff;
-	} else {
-		ack_status=((-time_difference) & 0x07ff) | 0x0800;
-	}
-	if(nack) {
-		ack_status |= 0x8000;
-	}
 	//ackbuf[1+ACK_LEN + EXTRA_ACK_LEN] = {ACK_LEN + EXTRA_ACK_LEN + AUX_LEN, 0x02, 0x00, seqno, 0x02, 0x1e, ack_status_LSB, ack_status_MSB};
-	ackbuf[0] = ACK_LEN + EXTRA_ACK_LEN + AUX_LEN; //total_len
 	ackbuf[1] = 0x02;
 	ackbuf[2] = 0x22; //b9:IE-list-present=1 - b12-b13:frame version=2
+	ackbuf[3] = seqno; //done in radio driver
 	/* Append IE timesync */
-	//ackbuf[3] = seqno; //done in radio driver
-	ackbuf[4] = 0x02;
-	ackbuf[5] = 0x1e;
-	ackbuf[6] = ack_status&0xff;
-	ackbuf[7] = (ack_status>>8)&0xff;
+	ackbuf[0] = 3 /*FCF 2B + SEQNO 1B*/ + add_sync_IE(&ackbuf[4], time_difference_32, nack);
 }
 /*---------------------------------------------------------------------------*/
 static void
@@ -1201,7 +1206,7 @@ init(void)
 	working_on_queue = 0;
 	softack_make_callback_f *softack_make = tsch_make_sync_ack;
 	softack_interrupt_exit_callback_f *interrupt_exit = tsch_resume_powercycle;
-	cc2420_softack_subscribe(softack_make, interrupt_exit);
+	NETSTACK_RADIO_softack_subscribe(softack_make, interrupt_exit);
 
 	//schedule next wakeup? or leave for higher layer to decide? i.e, scan, ...
 	tsch_associate();

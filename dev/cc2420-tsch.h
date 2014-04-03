@@ -65,8 +65,6 @@ struct received_frame_s {
   struct received_frame_s *next;
   uint8_t buf[CC2420_MAX_PACKET_LEN];
   uint8_t len;
-  uint8_t acked;
-  uint8_t seqno;
   rimeaddr_t source_address;
 };
 
@@ -111,8 +109,8 @@ void cc2420_set_cca_threshold(int value);
 /************************************************************************/
 /* Additional low-level functions for the CC2420 */
 /************************************************************************/
-typedef void(softack_make_callback_f)(unsigned char *ackbuf, rtimer_clock_t last_packet_timestamp, uint8_t nack);
-typedef int(softack_interrupt_exit_callback_f)(uint8_t is_ack, uint8_t need_ack, struct received_frame_s * last_rf);
+typedef void(softack_make_callback_f)(uint8_t **ackbuf, uint8_t seqno, rtimer_clock_t last_packet_timestamp, uint8_t nack);
+typedef void(softack_interrupt_exit_callback_f)(uint8_t is_ack, uint8_t need_ack, struct received_frame_s * last_rf);
 
 /* Subscribe with two callbacks called from FIFOP interrupt */
 void cc2420_softack_subscribe(softack_make_callback_f *softack_make, softack_interrupt_exit_callback_f *interrupt_exit);
@@ -123,9 +121,20 @@ int cc2420_read_ack(void *buf, int);
 int cc2420_pending_irq(void);
 void cc2420_address_decode(uint8_t enable);
 //to initialize radio sfd counter and synchronize it with rtimer
-void cc2420_arch_sfd_sync(rtimer_clock_t start_time, uint8_t capture_start_sfd,
+void cc2420_sfd_sync(uint8_t capture_start_sfd,
 		uint8_t capture_end_sfd);
 uint16_t cc2420_read_sfd_timer(void);
+
+#define NETSTACK_RADIO_softack_subscribe 	cc2420_softack_subscribe
+#define NETSTACK_RADIO_get_rx_end_time 		cc2420_get_rx_end_time
+#define NETSTACK_RADIO_send_ack 					cc2420_send_ack
+#define NETSTACK_RADIO_read_ack 					cc2420_read_ack
+#define NETSTACK_RADIO_pending_irq 				cc2420_pending_irq
+#define NETSTACK_RADIO_address_decode 		cc2420_address_decode
+#define NETSTACK_RADIO_sfd_sync 					cc2420_sfd_sync
+#define NETSTACK_RADIO_read_sfd_timer 		cc2420_read_sfd_timer
+#define NETSTACK_RADIO_set_channel 				cc2420_set_channel
+
 /************************************************************************/
 /* Additional SPI Macros for the CC2420 */
 /************************************************************************/

@@ -91,6 +91,14 @@ enum link_type_enum {
 	LINK_TYPE_ADVERTISING=1,
 };
 
+enum cell_decision_enum {
+	CELL_OFF=0,
+	CELL_TX=1,
+	CELL_TX_IDLE=2, //No packet to transmit
+	CELL_TX_BACKOFF=3,  //csma backoff
+	CELL_RX=4,
+};
+
 typedef struct {
 	/* Unique identifier (local to specified slotframe) for the link */
 	uint16_t link_handle;
