@@ -98,9 +98,9 @@ volatile uint8_t working_on_queue;
 #else
 #define NBR_BUFFER_SIZE 8
 #endif /* !(QUEUEBUF_CONF_NUM & (QUEUEBUF_CONF_NUM-1)) */
-#define macMinBE 3
+#define macMinBE 1
 #define macMaxFrameRetries 4
-#define macMaxBE 5
+#define macMaxBE 4
 
 // TSCH PACKET STRUCTURE
 struct TSCH_packet
@@ -938,7 +938,7 @@ powercycle(struct rtimer *t, void *ptr)
 							COOJA_DEBUG_PRINTF("drift seen %d\n", last_drift);
 							// check the source address for potential time-source match
 							n = neighbor_queue_from_addr(&last_rf->source_address);
-							if(n->time_source) {
+							if(n != NULL && n->time_source) {
 								// should be the average of drifts to all time sources
 								drift_correction -= last_drift;
 								++drift_counter;
@@ -1100,7 +1100,7 @@ tsch_associate(void)
 					n=add_queue(addr);
 				}
 				if( n!= NULL ) {
-					n->time_source = links_list[i]->link_options & LINK_OPTION_TIME_KEEPING ? 1: n->time_source;
+					n->time_source = (links_list[i]->link_options & LINK_OPTION_TIME_KEEPING) ? 1 : n->time_source;
 				}
 			}
 		}
