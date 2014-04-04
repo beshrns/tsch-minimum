@@ -67,49 +67,15 @@ static volatile ieee154e_vars_t ieee154e_vars;
 #define TSCH_ADDRESS_FILTER 0
 #endif /* TSCH_CONF_ADDRESS_FILTER */
 
-#ifndef TSCH_802154_AUTOACK
-#ifdef TSCH_CONF_802154_AUTOACK
-#define TSCH_802154_AUTOACK TSCH_CONF_802154_AUTOACK
+#ifndef TSCH_802154_DUPLICATE_DETECTION
+#ifdef TSCH_CONF_802154_DUPLICATE_DETECTION
+#define TSCH_802154_DUPLICATE_DETECTION TSCH_CONF_802154_DUPLICATE_DETECTION
 #else
-#define TSCH_802154_AUTOACK 0
+#define TSCH_802154_DUPLICATE_DETECTION 1
 #endif /* TSCH_CONF_802154_AUTOACK */
 #endif /* TSCH_802154_AUTOACK */
 
-#ifndef TSCH_802154_AUTOACK_HW
-#ifdef TSCH_CONF_802154_AUTOACK_HW
-#define TSCH_802154_AUTOACK_HW TSCH_CONF_802154_AUTOACK_HW
-#else
-#define TSCH_802154_AUTOACK_HW 0
-#endif /* TSCH_CONF_802154_AUTOACK_HW */
-#endif /* TSCH_802154_AUTOACK_HW */
-
-#if TSCH_802154_AUTOACK
-#include "sys/rtimer.h"
-#include "dev/watchdog.h"
-
-#ifdef TSCH_CONF_ACK_WAIT_TIME
-#define ACK_WAIT_TIME TSCH_CONF_ACK_WAIT_TIME
-#else /* TSCH_CONF_ACK_WAIT_TIME */
-#define ACK_WAIT_TIME                      RTIMER_SECOND / 2500
-#endif /* TSCH_CONF_ACK_WAIT_TIME */
-#ifdef TSCH_CONF_AFTER_ACK_DETECTED_WAIT_TIME
-#define AFTER_ACK_DETECTED_WAIT_TIME TSCH_CONF_AFTER_ACK_DETECTED_WAIT_TIME
-#else /* TSCH_CONF_AFTER_ACK_DETECTED_WAIT_TIME */
-#define AFTER_ACK_DETECTED_WAIT_TIME       RTIMER_SECOND / 1500
-#endif /* TSCH_CONF_AFTER_ACK_DETECTED_WAIT_TIME */
-#endif /* TSCH_802154_AUTOACK */
-
-#ifdef TSCH_CONF_SEND_802154_ACK
-#define TSCH_SEND_802154_ACK TSCH_CONF_SEND_802154_ACK
-#else /* TSCH_CONF_SEND_802154_ACK */
-#define TSCH_SEND_802154_ACK 0
-#endif /* TSCH_CONF_SEND_802154_ACK */
-
-#if TSCH_SEND_802154_ACK
-#include "net/mac/frame802154.h"
-#endif /* TSCH_SEND_802154_ACK */
-
-#if TSCH_802154_AUTOACK || TSCH_802154_AUTOACK_HW
+#if TSCH_802154_DUPLICATE_DETECTION
 struct seqno {
 	rimeaddr_t sender;
 	uint8_t seqno;
@@ -122,7 +88,7 @@ struct seqno {
 #endif /* NETSTACK_CONF_MAC_SEQNO_HISTORY */
 
 static struct seqno received_seqnos[MAX_SEQNOS];
-#endif /* TSCH_802154_AUTOACK || TSCH_802154_AUTOACK_HW */
+#endif /* TSCH_802154_DUPLICATE_DETECTION */
 
 // variable to protect queue structure
 volatile uint8_t working_on_queue;
@@ -150,13 +116,11 @@ struct TSCH_packet
 
 struct neighbor_queue
 {
-//	struct neighbor_queue *next; // pointer to next neighbor
-//	rimeaddr_t addr; // neighbor address
 	uint8_t time_source;
 	uint8_t BE_value; // current value of backoff exponent for this neighbor
-	uint8_t BW_value; // current value of backoff counter fot this neighbor
+	uint8_t BW_value; // current value of backoff counter for this neighbor
 	struct TSCH_packet buffer[MAX_NUM_PKT]; // circular buffer of packets for this neighbor
-	uint8_t put_ptr, get_ptr, mask; // data-structures for circular buffer
+	uint8_t put_ptr, get_ptr; // data-structures for circular buffer
 };
 
 #include "net/nbr-table.h"
@@ -217,7 +181,6 @@ add_queue(const rimeaddr_t *addr)
 		n->BW_value = 0;
 		n->put_ptr = 0;
 		n->get_ptr = 0;
-		n->mask = MAX_NUM_PKT - 1;
 		n->time_source = 0;
 		uint8_t i;
 		for (i = 0; i < MAX_NUM_PKT; i++) {
@@ -261,17 +224,15 @@ add_packet_to_queue(mac_callback_t sent, void* ptr, const rimeaddr_t *addr)
 {
 	struct neighbor_queue *n = neighbor_queue_from_addr(addr); // retrieve the queue from address
 	if (n != NULL) {
-		if (((n->put_ptr - n->get_ptr) & n->mask) == n->mask) {
+		if (((n->put_ptr - n->get_ptr) & (MAX_NUM_PKT - 1)) == (MAX_NUM_PKT - 1)) { //queue full
 			return 0;
 		}
 		n->buffer[n->put_ptr].pkt = queuebuf_new_from_packetbuf(); // create new packet from packetbuf
-		void *p = queuebuf_dataptr(n->buffer[n->put_ptr].pkt);
-
 		n->buffer[n->put_ptr].sent = sent;
 		n->buffer[n->put_ptr].ptr = ptr;
-//		n->buffer[n->put_ptr].ret = 0;
+		n->buffer[n->put_ptr].ret = MAC_TX_DEFERRED;
 		n->buffer[n->put_ptr].transmissions = 0;
-		n->put_ptr = (n->put_ptr + 1) & n->mask;
+		n->put_ptr = (n->put_ptr + 1) & (MAX_NUM_PKT - 1);
 		return 1;
 	}
 	return 0;
@@ -283,13 +244,11 @@ add_packet_to_queue(mac_callback_t sent, void* ptr, const rimeaddr_t *addr)
 int
 remove_packet_from_queue(const rimeaddr_t *addr)
 {
-//COOJA_DEBUG_STR("CHIAMATO RIMOSSO\n");
 	struct neighbor_queue *n = neighbor_queue_from_addr(addr); // retrieve the queue from address
 	if (n != NULL) {
-
-		if (((n->put_ptr - n->get_ptr) & n->mask) > 0) {
+		if (((n->put_ptr - n->get_ptr) & (MAX_NUM_PKT - 1)) > 0) {
 			queuebuf_free(n->buffer[n->get_ptr].pkt);
-			n->get_ptr = (n->get_ptr + 1) & n->mask;
+			n->get_ptr = (n->get_ptr + 1) & (MAX_NUM_PKT - 1);
 			return 1;
 		} else {
 			return 0;
@@ -304,7 +263,7 @@ read_packet_from_queue(const rimeaddr_t *addr)
 {
 	struct neighbor_queue *n = neighbor_queue_from_addr(addr); // retrieve the queue from address
 	if (n != NULL) {
-		if (((n->put_ptr - n->get_ptr) & n->mask) > 0) {
+		if (((n->put_ptr - n->get_ptr) & (MAX_NUM_PKT - 1)) > 0) {
 			return &(n->buffer[n->get_ptr]);
 		} else {
 			return 0;
@@ -318,7 +277,7 @@ struct TSCH_packet*
 read_packet_from_neighbor_queue(const struct neighbor_queue *n)
 {
 	if (n != NULL) {
-		if (((n->put_ptr - n->get_ptr) & n->mask) > 0) {
+		if (((n->put_ptr - n->get_ptr) & (MAX_NUM_PKT - 1)) > 0) {
 			return &(n->buffer[n->get_ptr]);
 		} else {
 			return 0;
@@ -358,6 +317,7 @@ send_one_packet(mac_callback_t sent, void *ptr)
 	/* PACKETBUF_ATTR_MAC_SEQNO cannot be zero, due to a pecuilarity
 	 in framer-802154.c. */
 	seqno = (++ieee154e_vars.dsn) ? ieee154e_vars.dsn : ++ieee154e_vars.dsn;
+
 	packetbuf_set_attr(PACKETBUF_ATTR_MAC_SEQNO, seqno);
 	if (NETSTACK_FRAMER.create() < 0) {
 		return 0;
@@ -389,8 +349,6 @@ send_packet(mac_callback_t sent, void *ptr)
 static void
 send_list(mac_callback_t sent, void *ptr, struct rdc_buf_list *buf_list)
 {
-	COOJA_DEBUG_STR("TSCH send_list\n");
-
 	while (buf_list != NULL) {
 		/* We backup the next pointer, as it may be nullified by
 		 * mac_call_sent_callback() */
@@ -424,25 +382,19 @@ packet_input(void)
 	NETSTACK_DECRYPT();
 #endif /* NETSTACK_DECRYPT */
 
-#if TSCH_802154_AUTOACK
-	if(packetbuf_datalen() == ACK_LEN) {
-		/* Ignore ack packets */
-		PRINTF("nullrdc: ignored ack\n");
-	} else
-#endif /* TSCH_802154_AUTOACK */
 	if (NETSTACK_FRAMER.parse() < 0) {
-		PRINTF("nullrdc: failed to parse %u\n", packetbuf_datalen());
+		PRINTF("tsch: failed to parse %u\n", packetbuf_datalen());
 #if TSCH_ADDRESS_FILTER
 	} else if (!rimeaddr_cmp(packetbuf_addr(PACKETBUF_ADDR_RECEIVER),
 					&rimeaddr_node_addr)
 			&& !rimeaddr_cmp(packetbuf_addr(PACKETBUF_ADDR_RECEIVER),
 					&rimeaddr_null)) {
-		PRINTF("nullrdc: not for us\n");
+		PRINTF("tsch: not for us\n");
 #endif /* TSCH_ADDRESS_FILTER */
 	} else {
 		int duplicate = 0;
 
-#if TSCH_802154_AUTOACK || TSCH_802154_AUTOACK_HW
+#if TSCH_802154_DUPLICATE_DETECTION
 		/* Check for duplicate packet by comparing the sequence number
 		 of the incoming packet with the last few ones we saw. */
 		int i;
@@ -451,7 +403,8 @@ packet_input(void)
 					rimeaddr_cmp(packetbuf_addr(PACKETBUF_ADDR_SENDER),
 							&received_seqnos[i].sender)) {
 				/* Drop the packet. */
-				PRINTF("nullrdc: drop duplicate link layer packet %u\n",
+				COOJA_DEBUG_STR("tsch: drop duplicate link layer packet");
+				PRINTF("tsch: drop duplicate link layer packet %u\n",
 						packetbuf_attr(PACKETBUF_ATTR_PACKET_ID));
 				duplicate = 1;
 			}
@@ -465,25 +418,8 @@ packet_input(void)
 			rimeaddr_copy(&received_seqnos[0].sender,
 					packetbuf_addr(PACKETBUF_ADDR_SENDER));
 		}
-#endif /* TSCH_802154_AUTOACK */
+#endif /* TSCH_802154_DUPLICATE_DETECTION */
 
-#if TSCH_SEND_802154_ACK
-		{
-			frame802154_t info154;
-			frame802154_parse(original_dataptr, original_datalen, &info154);
-			if(info154.fcf.frame_type == FRAME802154_DATAFRAME &&
-					info154.fcf.ack_required != 0 &&
-					rimeaddr_cmp((rimeaddr_t *)&info154.dest_addr,
-							&rimeaddr_node_addr)) {
-				uint8_t ackdata[ACK_LEN] = {0, 0, 0};
-
-				ackdata[0] = FRAME802154_ACKFRAME;
-				ackdata[1] = 0;
-				ackdata[2] = info154.seq;
-				NETSTACK_RADIO.send(ackdata, ACK_LEN);
-			}
-		}
-#endif /* TSCH_SEND_ACK */
 		if (!duplicate) {
 			NETSTACK_MAC.input();
 			COOJA_DEBUG_STR("tsch packet_input, Not duplicate\n");
