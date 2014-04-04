@@ -28,5 +28,11 @@
 #undef UIP_CONF_ND6_SEND_RA
 #define UIP_CONF_ND6_SEND_RA 0
 
+#undef QUEUEBUF_CONF_NUM
+#define QUEUEBUF_CONF_NUM 4 /* should be a power of two */
+
+#undef NBR_TABLE_CONF_MAX_NEIGHBORS
+#define NBR_TABLE_CONF_MAX_NEIGHBORS	20
+
 #endif /* PROJECT_H_ */
 

@@ -93,14 +93,12 @@ static struct seqno received_seqnos[MAX_SEQNOS];
 // variable to protect queue structure
 volatile uint8_t working_on_queue;
 
-//define in project-conf: NBR_TABLE_CONF_MAX_NEIGHBORS
-//#ifndef NEIGHBOR_CONF_MAX_NEIGHBORS
-//# define MAX_NEIGHBOR 16
-//#else
-//# define MAX_NEIGHBOR NEIGHBOR_CONF_MAX_NEIGHBORS
-//#endif
-
-#define MAX_NUM_PKT 8 // POWER OF 2 -- queue size#define macMinBE 3
+#if ( QUEUEBUF_CONF_NUM && !(QUEUEBUF_CONF_NUM & (QUEUEBUF_CONF_NUM-1)) ) /* is it a power of two? */
+#define NBR_BUFFER_SIZE QUEUEBUF_CONF_NUM // POWER OF 2 -- queue size
+#else
+#define NBR_BUFFER_SIZE 8
+#endif /* !(QUEUEBUF_CONF_NUM & (QUEUEBUF_CONF_NUM-1)) */
+#define macMinBE 3
 #define macMaxFrameRetries 4
 #define macMaxBE 5
 
@@ -117,12 +115,13 @@ struct TSCH_packet
 struct neighbor_queue
 {
 	uint8_t time_source;
-	uint8_t BE_value; // current value of backoff exponent for this neighbor
-	uint8_t BW_value; // current value of backoff counter for this neighbor
-	struct TSCH_packet buffer[MAX_NUM_PKT]; // circular buffer of packets for this neighbor
-	uint8_t put_ptr, get_ptr; // data-structures for circular buffer
+	uint8_t BE_value; // current value of backoff exponent
+	uint8_t BW_value; // current value of backoff counter
+	struct TSCH_packet buffer[NBR_BUFFER_SIZE]; // circular buffer of packets. Its size should be a power of two
+	uint8_t put_ptr, get_ptr; // pointers for circular buffer implementation
 };
 
+/* NBR_TABLE_CONF_MAX_NEIGHBORS specifies the size of the table */
 #include "net/nbr-table.h"
 NBR_TABLE(struct neighbor_queue, neighbor_list);
 
@@ -183,7 +182,7 @@ add_queue(const rimeaddr_t *addr)
 		n->get_ptr = 0;
 		n->time_source = 0;
 		uint8_t i;
-		for (i = 0; i < MAX_NUM_PKT; i++) {
+		for (i = 0; i < NBR_BUFFER_SIZE; i++) {
 			n->buffer[i].pkt = 0;
 			n->buffer[i].transmissions = 0;
 		}
@@ -205,7 +204,7 @@ remove_queue(const rimeaddr_t *addr)
 	int i;
 	struct neighbor_queue *n = neighbor_queue_from_addr(addr); // retrieve the queue from address
 	if (n != NULL) {
-		for (i = 0; i < MAX_NUM_PKT; i++) {      // free packets of neighbor
+		for (i = 0; i < NBR_BUFFER_SIZE; i++) {      // free packets of neighbor
 			queuebuf_free(n->buffer[i].pkt);
 		}
 		nbr_table_remove(neighbor_list, n);
@@ -224,7 +223,8 @@ add_packet_to_queue(mac_callback_t sent, void* ptr, const rimeaddr_t *addr)
 {
 	struct neighbor_queue *n = neighbor_queue_from_addr(addr); // retrieve the queue from address
 	if (n != NULL) {
-		if (((n->put_ptr - n->get_ptr) & (MAX_NUM_PKT - 1)) == (MAX_NUM_PKT - 1)) { //queue full
+		//is queue full?
+		if (((n->put_ptr - n->get_ptr) & (NBR_BUFFER_SIZE - 1)) == (NBR_BUFFER_SIZE - 1)) {
 			return 0;
 		}
 		n->buffer[n->put_ptr].pkt = queuebuf_new_from_packetbuf(); // create new packet from packetbuf
@@ -232,7 +232,7 @@ add_packet_to_queue(mac_callback_t sent, void* ptr, const rimeaddr_t *addr)
 		n->buffer[n->put_ptr].ptr = ptr;
 		n->buffer[n->put_ptr].ret = MAC_TX_DEFERRED;
 		n->buffer[n->put_ptr].transmissions = 0;
-		n->put_ptr = (n->put_ptr + 1) & (MAX_NUM_PKT - 1);
+		n->put_ptr = (n->put_ptr + 1) & (NBR_BUFFER_SIZE - 1);
 		return 1;
 	}
 	return 0;
@@ -246,9 +246,9 @@ remove_packet_from_queue(const rimeaddr_t *addr)
 {
 	struct neighbor_queue *n = neighbor_queue_from_addr(addr); // retrieve the queue from address
 	if (n != NULL) {
-		if (((n->put_ptr - n->get_ptr) & (MAX_NUM_PKT - 1)) > 0) {
+		if (((n->put_ptr - n->get_ptr) & (NBR_BUFFER_SIZE - 1)) > 0) {
 			queuebuf_free(n->buffer[n->get_ptr].pkt);
-			n->get_ptr = (n->get_ptr + 1) & (MAX_NUM_PKT - 1);
+			n->get_ptr = (n->get_ptr + 1) & (NBR_BUFFER_SIZE - 1);
 			return 1;
 		} else {
 			return 0;
@@ -263,7 +263,7 @@ read_packet_from_queue(const rimeaddr_t *addr)
 {
 	struct neighbor_queue *n = neighbor_queue_from_addr(addr); // retrieve the queue from address
 	if (n != NULL) {
-		if (((n->put_ptr - n->get_ptr) & (MAX_NUM_PKT - 1)) > 0) {
+		if (((n->put_ptr - n->get_ptr) & (NBR_BUFFER_SIZE - 1)) > 0) {
 			return &(n->buffer[n->get_ptr]);
 		} else {
 			return 0;
@@ -277,7 +277,7 @@ struct TSCH_packet*
 read_packet_from_neighbor_queue(const struct neighbor_queue *n)
 {
 	if (n != NULL) {
-		if (((n->put_ptr - n->get_ptr) & (MAX_NUM_PKT - 1)) > 0) {
+		if (((n->put_ptr - n->get_ptr) & (NBR_BUFFER_SIZE - 1)) > 0) {
 			return &(n->buffer[n->get_ptr]);
 		} else {
 			return 0;
@@ -310,11 +310,11 @@ send_one_packet(mac_callback_t sent, void *ptr)
 
 	uint16_t seqno;
 	const rimeaddr_t *addr = packetbuf_addr(PACKETBUF_ADDR_RECEIVER);
-	//Ask for ACK if we are sending anything otherthan broadcast
+	//Ask for ACK if we are sending anything other than broadcast
 	if (!rimeaddr_cmp(addr, &rimeaddr_null)) {
 		packetbuf_set_attr(PACKETBUF_ATTR_MAC_ACK, 1);
 	}
-	/* PACKETBUF_ATTR_MAC_SEQNO cannot be zero, due to a pecuilarity
+	/* PACKETBUF_ATTR_MAC_SEQNO cannot be zero, due to a peculiarity
 	 in framer-802154.c. */
 	seqno = (++ieee154e_vars.dsn) ? ieee154e_vars.dsn : ++ieee154e_vars.dsn;
 
