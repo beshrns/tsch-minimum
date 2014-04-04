@@ -269,6 +269,8 @@ add_packet_to_queue(mac_callback_t sent, void* ptr, const rimeaddr_t *addr)
 
 		n->buffer[n->put_ptr].sent = sent;
 		n->buffer[n->put_ptr].ptr = ptr;
+//		n->buffer[n->put_ptr].ret = 0;
+		n->buffer[n->put_ptr].transmissions = 0;
 		n->put_ptr = (n->put_ptr + 1) & n->mask;
 		return 1;
 	}
@@ -932,6 +934,7 @@ powercycle(struct rtimer *t, void *ptr)
 					}
 					ret = MAC_TX_OK;
 				}
+				/* poll MAC TX callback */
 				p->ret=ret;
 				process_post(&tsch_tx_callback_process, PROCESS_EVENT_POLL, p);
 			} else if (cell_decison == CELL_RX) {
@@ -1022,7 +1025,7 @@ powercycle(struct rtimer *t, void *ptr)
 		/* apply sync correction on the start of the new slotframe */
 		if (!next_timeslot) {
 			if(drift_counter) {
-				//convert from micro seconds to rtimer ticks and take average
+				/* convert from microseconds to rtimer ticks and take average */
 				drift_correction += (drift*100)/(3051*drift_counter);
 			}
 			if(drift_correction) {
@@ -1039,7 +1042,7 @@ powercycle(struct rtimer *t, void *ptr)
 		ieee154e_vars.asn += dt;
 		start += duration;
 
-		//check for missed deadline
+		/* check for missed deadline and skip slot accordingly in order not to corrupt the whole schedule */
 		if (start - RTIMER_NOW() > duration) {
 			COOJA_DEBUG_STR("skipping slot because of missed deadline!\n");
 			//go for next slot then
@@ -1063,8 +1066,8 @@ COOJA_DEBUG_STR("TSCH is OFF!!");
 PT_END(&mpt);
 }
 /*---------------------------------------------------------------------------*/
-/* This function adds the Sync IE from the beginning of the buffer and returns the number of bytes */
-static uint8_t
+/* This function adds the Sync IE from the beginning of the buffer and returns the reported drift in microseconds */
+static int16_t
 add_sync_IE(uint8_t* buf, int32_t time_difference_32, uint8_t nack) {
 	int16_t time_difference;
 	uint16_t ack_status = 0;
@@ -1083,10 +1086,10 @@ add_sync_IE(uint8_t* buf, int32_t time_difference_32, uint8_t nack) {
 	buf[1] = 0x1e;
 	buf[2] = ack_status & 0xff;
 	buf[3] = (ack_status >> 8) & 0xff;
-	return len;
+	return time_difference;
 }
 /*---------------------------------------------------------------------------*/
-// Create an EB packet and puts it in the EB queue
+// TODO Create an EB packet and puts it in the EB queue
 static int
 send_eb(rimeaddr_t *addr, int16_t reported_drift, slotframe_t* slotframe, cell_t * links_list, uint8_t links_list_size)
 {
@@ -1175,15 +1178,16 @@ void tsch_make_sync_ack(uint8_t **buf, uint8_t seqno, rtimer_clock_t last_packet
 	int32_t time_difference_32;
 	COOJA_DEBUG_STR("tsch_make_sync_ack");
 	*buf=ackbuf;
-	//calculating sync
+	/* calculating sync in rtimer ticks */
 	time_difference_32 = (int32_t)start + TsTxOffset - last_packet_timestamp;
 	last_drift = time_difference_32;
-	//ackbuf[1+ACK_LEN + EXTRA_ACK_LEN] = {ACK_LEN + EXTRA_ACK_LEN + AUX_LEN, 0x02, 0x00, seqno, 0x02, 0x1e, ack_status_LSB, ack_status_MSB};
-	ackbuf[1] = 0x02;
-	ackbuf[2] = 0x22; //b9:IE-list-present=1 - b12-b13:frame version=2
-	ackbuf[3] = seqno; //done in radio driver
+	/* ackbuf[1+ACK_LEN + EXTRA_ACK_LEN] = {ACK_LEN + EXTRA_ACK_LEN + AUX_LEN, 0x02, 0x00, seqno, 0x02, 0x1e, ack_status_LSB, ack_status_MSB}; */
+	ackbuf[1] = 0x02; /* ACK frame */
+	ackbuf[2] = 0x22; /* b9:IE-list-present=1 - b12-b13:frame version=2 */
+	ackbuf[3] = seqno;
 	/* Append IE timesync */
-	ackbuf[0] = 3 /*FCF 2B + SEQNO 1B*/ + add_sync_IE(&ackbuf[4], time_difference_32, nack);
+	add_sync_IE(&ackbuf[4], time_difference_32, nack);
+	ackbuf[0] = 3 /*FCF 2B + SEQNO 1B*/ + 4 /* sync IE size */;
 }
 /*---------------------------------------------------------------------------*/
 static void
@@ -1197,8 +1201,7 @@ init(void)
 	ieee154e_vars.state = 0;
 	ieee154e_vars.sync_timeout = 0; //30sec/slotDuration - (asn-asn0)*slotDuration
 	ieee154e_vars.mac_ebsn = 0;
-	ieee154e_vars.join_priority = 0xff; //inherit from RPL - PAN coordinator: 0 -- lower is better
-	//memb_init(&neighbor_memb);
+	ieee154e_vars.join_priority = 0xff; /* inherit from RPL - PAN coordinator: 0 -- lower is better */
 	nbr_table_register(neighbor_list, NULL);
 	working_on_queue = 0;
 	softack_make_callback_f *softack_make = tsch_make_sync_ack;
@@ -1209,7 +1212,7 @@ init(void)
 	tsch_associate();
 }
 /*---------------------------------------------------------------------------*/
-//a polled-process to invoke the MAC tx callback asynchronously
+/* a polled-process to invoke the MAC tx callback asynchronously */
 PROCESS_THREAD(tsch_tx_callback_process, ev, data)
 {
 	int len;
@@ -1222,7 +1225,7 @@ PROCESS_THREAD(tsch_tx_callback_process, ev, data)
 		COOJA_DEBUG_STR("tsch_tx_callback_process: calling mac tx callback\n");
 		if(data != NULL) {
 			struct TSCH_packet* p = (struct TSCH_packet*) data;
-			//XXX callback -- do we need to restore packet to packetbuf?
+			/* XXX callback -- do we need to restore the packet to packetbuf? */
 			mac_call_sent_callback(p->sent, p->ptr, p->ret, p->transmissions);
 		}
 	}
